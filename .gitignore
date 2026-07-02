@@ -1,0 +1,64 @@
+# 1. 민감한 정보 및 환경 변수
+.env
+*.env
+secrets.*
+config.local.yml
+
+# 2. Gradle 및 빌드 캐시 (Fabric Loom 포함)
+.gradle/
+/.gradle/loom-cache
+build/
+/build/loom-cache
+/build/devlibs
+/build/libs
+/build/tmp
+# (주의) Gradle Wrapper는 깃허브에 포함되어야 합니다.
+!gradle/wrapper/gradle-wrapper.jar
+!gradle/wrapper/gradle-wrapper.properties
+
+# 3. Java 컴파일 및 임시/바이너리 파일
+*.class
+*.jar
+*.war
+*.ear
+*.tmp
+*.bin
+
+# 4. 마인크래프트 테스트 실행 환경 (Fabric Run)
+/run/
+/run/saves
+/run/logs
+run/downloads/log.json
+run/command_history.txt
+/run/.fabric/tmp
+/run/.fabric/processedMods
+/run/config
+/run/journeymap
+/run/mods
+
+# 5. 기존 마인크래프트 로컬 서버 파일 (루트 경로에 있을 경우)
+logs/
+crash-reports/
+world/
+world_nether/
+world_the_end/
+server.properties
+ops.json
+whitelist.json
+banned-ips.json
+banned-players.json
+usercache.json
+
+# 6. IDE 및 에디터 설정 (개인 작업 환경)
+.idea/
+*.iml
+*.iws
+.vscode/
+.classpath
+.project
+.settings/
+bin/
+
+# 7. OS 자동 생성 파일
+.DS_Store
+Thumbs.db

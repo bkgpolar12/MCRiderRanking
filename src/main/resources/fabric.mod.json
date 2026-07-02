@@ -1,0 +1,45 @@
+{
+	"schemaVersion": 1,
+	"id": "modid",
+	"version": "${version}",
+	"name": "MCRiderRanking",
+	"description": "Daktoritang",
+	"authors": [
+		"BKGpolar"
+	],
+	"contact": {
+		"homepage": "https://modrinth.com/mod/mcriderranking",
+		"sources": "https://github.com/bkgpolar12/MCriderRanking"
+	},
+	"license": "MIT",
+	"icon": "assets/modid/icon.png",
+	"environment": "*",
+	"entrypoints": {
+		"main": [
+			"com.example.ExampleMod"
+		],
+		"client": [
+			"com.example.rankinglog.RankingLogMod"
+		],
+		"modmenu": [
+				"com.example.rankinglog.ModMenuIntegration"
+			]
+
+	},
+	"mixins": [
+		"modid.mixins.json",
+		{
+			"config": "modid.client.mixins.json",
+			"environment": "client"
+		}
+	],
+	"depends": {
+		"fabricloader": ">=0.16.10",
+		"minecraft": "~1.21.5",
+		"java": ">=21",
+		"fabric-api": "*"
+	},
+	"suggests": {
+		"another-mod": "*"
+	}
+}
