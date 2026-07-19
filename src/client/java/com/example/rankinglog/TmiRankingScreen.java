@@ -462,6 +462,19 @@ public class TmiRankingScreen extends Screen {
         return super.mouseScrolled(mouseX, mouseY, horizontalAmount, verticalAmount);
     }
 
+    private void renderTooltip(DrawContext context, net.minecraft.text.Text text, int x, int y) {
+        if (textRenderer == null) return;
+        int tw = textRenderer.getWidth(text);
+        int tx = x + 8;
+        int ty = y - 16;
+        if (tx + tw + 8 > this.width) tx = this.width - tw - 8;
+        if (ty < 4) ty = y + 12;
+        context.fill(tx - 4, ty - 4, tx + tw + 4, ty + 12, 0xF0100010);
+        context.fill(tx - 3, ty - 3, tx + tw + 3, ty + 11, 0xF0100010);
+        context.drawBorder(tx - 4, ty - 4, tw + 8, 16, 0xFF5000FF);
+        context.drawTextWithShadow(textRenderer, text, tx, ty, 0xFFFFFF);
+    }
+
     @Override
     public void renderBackground(DrawContext context, int mouseX, int mouseY, float delta) {
         context.fill(0, 0, this.width, this.height, ModConfig.get().getBgColor());
@@ -1060,7 +1073,9 @@ public class TmiRankingScreen extends Screen {
                             boolean hoverBtn = isInside(mouseX, mouseY, btnX, btnY, btnW, btnH);
                             context.fill(btnX, btnY, btnX + btnW, btnY + btnH, hoverBtn ? 0xFF444444 : 0xFF222222);
                             drawRectBorder(context, btnX, btnY, btnW, btnH, hoverBtn ? 0xFF888888 : 0xFF555555);
-                            context.drawCenteredTextWithShadow(textRenderer, "프로필 가기", btnX + btnW / 2, btnY + 6, 0xFFFFFF);
+                            context.drawCenteredTextWithShadow(textRenderer, "👤", btnX + btnW / 2, btnY + 6, 0xFFFFFF);
+                            // 툴팁
+                            if (hoverBtn) renderTooltip(context, net.minecraft.text.Text.literal("프로필 보기"), mouseX, mouseY);
                         }
 
                         currentY += itemH;

@@ -25,7 +25,6 @@ public class PlayerProfileScreen extends Screen {
 
     // ★ 페이지네이션 대신 스크롤 상태 사용
     private int tableScroll = 0;
-    private int rowsPerPage = 10;
 
     private ButtonWidget backBtn, refreshBtn, globeBtn;
 

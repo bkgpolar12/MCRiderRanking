@@ -9,6 +9,8 @@ import net.minecraft.util.Formatting;
 import net.minecraft.util.Util;
 import net.fabricmc.loader.api.FabricLoader;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -17,6 +19,10 @@ public class AutoSubmitter {
     private static final AtomicLong lastSubmitAt = new AtomicLong(0);
     private static final long MIN_INTERVAL_MS = 1500;
 
+    // ★ 랩타임 감지 및 상태 동기화용 전역 변수
+    public static boolean multiPlayerSubmitArmed = false;
+    public static final List<String> lapTimes = new ArrayList<>();
+
     public static String getModVersion() {
         return FabricLoader.getInstance()
                 .getModContainer("rankinglog")
@@ -24,10 +30,11 @@ public class AutoSubmitter {
                 .orElse("UNKNOWN");
     }
 
+    // ★ lapsCsv 파라미터 추가
     public static void submitAsync(String player, String track, String timeStr, long timeMillis,
                                    int engine, String engineName, String bodyName,
                                    String tireName,
-                                   String modesCsv, String kartSpecDebug) {
+                                   String modesCsv, String kartSpecDebug, String lapsCsv) {
 
         long now = System.currentTimeMillis();
         long prev = lastSubmitAt.get();
@@ -45,7 +52,7 @@ public class AutoSubmitter {
 
         CompletableFuture
                 .supplyAsync(() -> {
-                    return AddRankingScreen.submitRecord(player, track, timeStr, timeMillis, engineName, bodyName, bodyColor, tireName, modesCsv, kartSpecDebug, uuid, token, currentVersion, serverAddress);
+                    return AddRankingScreen.submitRecord(player, track, timeStr, timeMillis, engineName, bodyName, bodyColor, tireName, modesCsv, kartSpecDebug, lapsCsv, uuid, token, currentVersion, serverAddress);
                 }, Util.getIoWorkerExecutor())
                 .exceptionally(ex -> {
                     ex.printStackTrace();
@@ -66,7 +73,7 @@ public class AutoSubmitter {
 
                             String toastTitle = track + " (" + timeStr + ")";
 
-                            // ★ 단축 시간 텍스트 생성 로직
+                            // 단축 시간 텍스트 생성 로직
                             String diffStr = "";
                             if (res.has("previousBestTime") && !res.get("previousBestTime").isJsonNull()) {
                                 long prevTime = res.get("previousBestTime").getAsLong();
@@ -92,7 +99,7 @@ public class AutoSubmitter {
                                         .append("§7카트: §f" + bodyName + "\n")
                                         .append("§7엔진: §f" + engineName);
 
-                                // ★ 성공 메시지에 단축 시간(diffStr) 포함
+                                // 성공 메시지에 단축 시간(diffStr) 포함
                                 Text message = Text.literal("§a[MCRiderRanking] 기록 등록 성공!" + diffStr + " ")
                                         .append(Text.literal("§e§n[클릭해서 랭킹 확인]").styled(style -> style
                                                 .withClickEvent(new ClickEvent.RunCommand("/rankinglog_open " + track))

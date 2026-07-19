@@ -23,6 +23,8 @@ public class RankingScreen extends Screen {
 
     private String track;
     private final List<Entry> ranking = new ArrayList<>();
+    // ★ 그룹화된 렌더링용 리스트 추가
+    private final List<GroupedEntry> groupedRanking = new ArrayList<>();
 
     private int tableScroll = 0;
     private int currentOffset = 0;
@@ -80,14 +82,21 @@ public class RankingScreen extends Screen {
 
     // ★ 인라인 아코디언 및 스탯 정보 관련 변수
     private SharedSidebar sharedSidebar;
-    private Entry selectedDetailEntry = null;
+    // ★ 선택 항목이 Entry가 아닌 GroupedEntry로 관리됩니다.
+    private GroupedEntry selectedDetailEntry = null;
     private String selectedProfileDesc = "불러오는 중...";
     private ButtonWidget globeBtn;
 
     // ★ 수동 버튼 렌더링 및 충돌 체크를 위한 좌표/크기 상태 변수들
     private boolean kartSpecExpanded = false;
     private int specBtnScreenX, specBtnScreenY, specBtnScreenW, specBtnScreenH;
+
+    // ★ 랩타임 버튼 렌더링 및 충돌 체크를 위한 좌표/크기 상태 변수들 추가
+    private boolean lapsExpanded = false;
+    private int lapsBtnScreenX, lapsBtnScreenY, lapsBtnScreenW, lapsBtnScreenH;
+
     private int profileBtnScreenX, profileBtnScreenY, profileBtnScreenW, profileBtnScreenH;
+    private int subRecordsBtnScreenX, subRecordsBtnScreenY, subRecordsBtnScreenW, subRecordsBtnScreenH;
 
     public static final String SUPABASE_URL = "https://wmlcwmfabuziancpxdoq.supabase.co/rest/v1/";
     public static final String SUPABASE_RPC_URL = SUPABASE_URL + "rpc/";
@@ -133,7 +142,6 @@ public class RankingScreen extends Screen {
         return this.textRenderer.trimToWidth(Text.literal(text), maxWidth - ellipsisWidth).getString() + "...";
     }
 
-    // ★ 수동 버튼 렌더링 클릭 충돌 감지 헬퍼 메서드
     private boolean isInside(double mx, double my, int x, int y, int w, int h) {
         return mx >= x && mx <= x + w && my >= y && my <= y + h;
     }
@@ -152,9 +160,54 @@ public class RankingScreen extends Screen {
         }).start();
     }
 
+    private int getItemHeight(GroupedEntry grp, boolean isExpanded, int hiddenCount) {
+        int h = ROW_H;
+        if (isExpanded) {
+            int localExpandH = 16 * 3; // 설명 + 모드 + 등록일
+            Entry topEntry = grp.entries.get(0);
+            boolean isSingle = "__singleplay__".equals(topEntry.serverAddress());
+
+            // 좁은 화면이라 숨겨진 컬럼(기록/카트/엔진)이 있으면 그만큼만 추가
+            if (hiddenCount > 0) {
+                localExpandH += hiddenCount * 16 + 5;
+            }
+
+            if (isSingle && kartSpecExpanded) {
+                String specRaw = topEntry.kartSpecDebug();
+                if (specRaw != null && !specRaw.isEmpty() && !specRaw.equals("없음")) {
+                    // ★ 실제 렌더는 2단 컬럼이므로, 줄 수의 절반만 높이로 반영
+                    int lines = 1;
+                    if (specRaw.contains("speed")) lines++;
+                    if (specRaw.contains("accel") || specRaw.contains("boost:")) lines++;
+                    if (specRaw.contains("corner") || specRaw.contains("drift")) lines++;
+                    if (specRaw.contains("gauge") || specRaw.contains("boosttime") || specRaw.contains("maxboostcount")) lines++;
+                    if (specRaw.contains("defense")) lines++;
+                    if (specRaw.contains("draft")) lines++;
+                    localExpandH += 16 + ((lines + 1) / 2) * 16; // 헤더 1줄 + (2단 컬럼 기준 줄 수)
+                } else {
+                    localExpandH += 16;
+                }
+            }
+            if (lapsExpanded) {
+                String lapRaw = topEntry.lapData();
+                if (lapRaw != null && !lapRaw.isEmpty() && !lapRaw.equals("없음")) {
+                    localExpandH += 16 + lapRaw.split(",").length * 16; // 헤더 1줄 + 바퀴별 1줄씩
+                } else {
+                    localExpandH += 16;
+                }
+            }
+
+            // ★ 서브 기록은 인라인 목록이 아니라 하단 버튼(⏱+)으로 모달을 열어 확인하므로
+            //    여기서 별도 높이를 예약하지 않습니다.
+            h += localExpandH + 16; // 하단 버튼 여백 최소화
+        }
+        return h;
+    }
+
+
+
     @Override
     protected void init() {
-        // ★ 서버 목록을 미리 불러와 서버 이름을 표시할 수 있게 준비합니다.
         ServerSelectModalScreen.fetchServersAsync(false);
 
         if (isNewUi()) {
@@ -224,7 +277,6 @@ public class RankingScreen extends Screen {
         headerH = 66; tableTop = HEADER_TOP + headerH + 10;
         int tableBottom = this.height - 40;
         tableH = Math.max(80, tableBottom - tableTop);
-        // ★ 최소 1개를 보장하되 약간의 보수적 계산을 위해 -1 여유 마진 추가
         rowsPerPage = Math.max(1, (tableH - 24) / ROW_H);
 
         boolean newUi = isNewUi();
@@ -234,6 +286,7 @@ public class RankingScreen extends Screen {
         tableX = newUi ? rightAreaX : OUTER_PAD + 8;
         tableW = newUi ? rightAreaW : this.width - (OUTER_PAD + 8) * 2;
     }
+
 
     private void repositionUiElements() {
         computeLayout();
@@ -288,16 +341,47 @@ public class RankingScreen extends Screen {
         fetchRankingData(true);
     }
 
+    // ★ 리스트를 순회하며 "한 플레이어의 모든 기록"을 그룹화 (연속 여부와 무관하게 전체 순회)
+    private void computeGroupedRanking() {
+        groupedRanking.clear();
+        if (ranking.isEmpty()) return;
+
+        Map<String, GroupedEntry> groupMap = new LinkedHashMap<>();
+
+        for (int i = 0; i < ranking.size(); i++) {
+            Entry e = ranking.get(i);
+            int realRank = i + 1; // 1-based index
+
+            GroupedEntry group = groupMap.get(e.player());
+            if (group == null) {
+                // 처음 발견된 플레이어면 해당 랭크를 대표 순위로 저장
+                group = new GroupedEntry(realRank, realRank);
+                group.entries.add(e);
+                group.entryRanks.add(realRank);
+                groupMap.put(e.player(), group);
+            } else {
+                // 이미 발견된 플레이어의 추가 하위 기록 저장
+                group.endRank = realRank; // 마지막 순위 업데이트 (UI 표시에 쓰일 수 있음)
+                group.entries.add(e);
+                group.entryRanks.add(realRank);
+            }
+        }
+
+        groupedRanking.addAll(groupMap.values());
+    }
+
     private void fetchRankingData(boolean reset) {
         if (reset) {
             currentOffset = 0;
             ranking.clear();
+            groupedRanking.clear();
             hasMoreData = true;
             tableScroll = 0;
             loading = true;
 
             selectedDetailEntry = null;
             kartSpecExpanded = false;
+            lapsExpanded = false;
         }
         if (!hasMoreData || isFetchingMore) return;
 
@@ -306,21 +390,14 @@ public class RankingScreen extends Screen {
 
         new Thread(() -> {
             try {
-                JsonObject req = new JsonObject();
-                req.addProperty("p_track", track);
-                req.addProperty("p_tire", selectedTire.equals("ALL") ? "" : selectedTire);
-                req.addProperty("p_engine", selectedEngine.equals("ALL") ? "" : selectedEngine);
-                req.addProperty("p_modes", String.join(",", selectedModes));
-                req.addProperty("p_limit", FETCH_LIMIT);
-                req.addProperty("p_offset", currentOffset);
-
                 String reqPlayer1 = (MinecraftClient.getInstance() != null
                         && MinecraftClient.getInstance().getSession() != null)
                         ? MinecraftClient.getInstance().getSession().getUsername() : "";
                 com.google.gson.JsonObject reqBody1 = new com.google.gson.JsonObject();
                 reqBody1.addProperty("p_server_address", CurrentServerHolder.getForQuery());
                 reqBody1.addProperty("p_req_player", reqPlayer1);
-                JsonObject obj = Net.postJson(SUPABASE_RPC_URL + "get_all_rankings_v3",
+
+                JsonObject obj = Net.postJson(SUPABASE_RPC_URL + "get_all_rankings_v4",
                         reqBody1.toString());
 
                 if (obj.has("ok") && obj.get("ok").getAsBoolean()) {
@@ -343,7 +420,8 @@ public class RankingScreen extends Screen {
                                     safeString(o, "modes", "없음"),
                                     safeLong(o, "submittedAtMs", 0L),
                                     getAnyString(o, "serverAddress", "server_address", "UNKNOWN"),
-                                    getAnyString(o, "kartSpecDebug", "kart_spec_debug", "없음")
+                                    getAnyString(o, "kartSpecDebug", "kart_spec_debug", "없음"),
+                                    getAnyString(o, "lapData", "lap_data", "")
                             );
 
                             boolean okTire = selectedTire.equalsIgnoreCase("ALL") || selectedTire.equalsIgnoreCase(e.tireName());
@@ -357,6 +435,8 @@ public class RankingScreen extends Screen {
                         if (toFetch > 0) {
                             for(int i=0; i<toFetch; i++) ranking.add(tempFiltered.get(currentOffset + i));
                             currentOffset += toFetch;
+                            // ★ 렌더링용 그룹 배열 재계산
+                            computeGroupedRanking();
                         } else {
                             hasMoreData = false;
                         }
@@ -367,7 +447,6 @@ public class RankingScreen extends Screen {
                     populateFilterLists(obj.getAsJsonObject("rankings").has(track) ? obj.getAsJsonObject("rankings").getAsJsonObject(track).getAsJsonArray("ranking") : new JsonArray());
                 } else {
                     String rawErr = safeString(obj, "error", "unknown error");
-                    // ★ 에러 메시지 매핑 (싱글플레이 차단 포함)
                     error = rawErr.equals("SINGLEPLAY_RESTRICTED") ? safeString(obj, "message", "싱글플레이 랭킹 열람이 제한되어 있습니다.") : rawErr;
                 }
             } catch (Exception e) {
@@ -452,7 +531,6 @@ public class RankingScreen extends Screen {
         context.drawCenteredTextWithShadow(this.textRenderer, tr, 0, 0, 0xFFDDAA);
         context.getMatrices().pop();
 
-        // ★ 현재 서버 이름 렌더링
         if (globeBtn != null) {
             String currentServerName = ServerSelectModalScreen.getServerTitle(CurrentServerHolder.getForQuery());
             context.drawTextWithShadow(this.textRenderer, "§a" + currentServerName, globeBtn.getX() + globeBtn.getWidth() + 6, y + 17, 0xFFFFFF);
@@ -545,7 +623,6 @@ public class RankingScreen extends Screen {
         }
     }
 
-    // ★ 로딩 상태 등과 무관하게 패널을 최상단에 그려주는 헬퍼 메서드 추가
     private void renderPanels(DrawContext context, int mouseX, int mouseY) {
         if (tirePanelOpen || enginePanelOpen || modePanelOpen) {
             context.getMatrices().push();
@@ -575,7 +652,6 @@ public class RankingScreen extends Screen {
         context.drawTextWithShadow(textRenderer, text, tx, ty, 0xFFFFFF);
     }
 
-
     @Override
     public boolean mouseScrolled(double mouseX, double mouseY, double horizontalAmount, double verticalAmount) {
         if (isNewUi() && sharedSidebar != null && sharedSidebar.mouseScrolled(mouseX, mouseY, horizontalAmount, verticalAmount)) {
@@ -591,13 +667,8 @@ public class RankingScreen extends Screen {
 
         if (!loading && error == null) {
             if (mouseX >= tableX && mouseX <= tableX + tableW && mouseY >= tableTop && mouseY <= tableTop + tableH) {
-
-                // ★ 펼쳐진 항목에 의한 동적 높이 보정을 포함한 스크롤 계산 로직
                 int extraH = 0;
                 if (selectedDetailEntry != null) {
-                    boolean isSingle = "__singleplay__".equals(selectedDetailEntry.serverAddress());
-                    extraH += 16 * 3;
-
                     boolean showTime = tableW > 250;
                     boolean showBody = tableW > 320;
                     boolean showEngine = tableW > 380;
@@ -606,29 +677,14 @@ public class RankingScreen extends Screen {
                     if (!showTime) hiddenCount++;
                     if (!showBody) hiddenCount++;
                     if (!showEngine) hiddenCount++;
-                    if (hiddenCount > 0) extraH += hiddenCount * 16 + 5;
 
-                    if (isSingle && kartSpecExpanded) {
-                        String specRaw = selectedDetailEntry.kartSpecDebug();
-                        if (specRaw != null && !specRaw.isEmpty() && !specRaw.equals("없음")) {
-                            int lines = 1;
-                            if (specRaw.contains("speed")) lines++;
-                            if (specRaw.contains("accel") || specRaw.contains("boost:")) lines++;
-                            if (specRaw.contains("corner") || specRaw.contains("drift")) lines++;
-                            if (specRaw.contains("gauge") || specRaw.contains("boosttime") || specRaw.contains("maxboostcount")) lines++;
-                            if (specRaw.contains("defense")) lines++;
-                            if (specRaw.contains("draft")) lines++;
-                            extraH += lines * 16 + 10;
-                        } else {
-                            extraH += 16 + 10;
-                        }
-                    }
-                    extraH += 26;
+                    // ★ getItemHeight() 한 곳에서만 계산 (중복 계산 제거)
+                    extraH = getItemHeight(selectedDetailEntry, true, hiddenCount) - ROW_H;
                 }
 
-                // ★ 스크롤 한계(maxScroll) 계산 시 여유 마진(+1) 부여로 하단 잘림 방지
+                // ★ 그룹화 배열 크기(groupedRanking.size()) 기준으로 스크롤 한계선 계산
                 int adjustedCapacityRows = Math.max(1, (tableH - 24 - extraH) / ROW_H) + 1;
-                int maxScroll = Math.max(0, ranking.size() - adjustedCapacityRows + 1);
+                int maxScroll = Math.max(0, groupedRanking.size() - adjustedCapacityRows + 1);
 
                 tableScroll = Math.max(0, Math.min(tableScroll - (int)Math.signum(verticalAmount) * 3, maxScroll));
 
@@ -638,7 +694,6 @@ public class RankingScreen extends Screen {
                 return true;
             }
         }
-
         return super.mouseScrolled(mouseX, mouseY, horizontalAmount, verticalAmount);
     }
 
@@ -690,14 +745,14 @@ public class RankingScreen extends Screen {
             return true;
         }
 
-        if (!loading && error == null && !ranking.isEmpty()) {
+        if (!loading && error == null && !groupedRanking.isEmpty()) {
             if (mouseX >= tableX && mouseX <= tableX + tableW && mouseY >= tableTop + 24 && mouseY <= tableTop + tableH) {
 
                 if (selectedDetailEntry != null && profileBtnScreenW > 0) {
                     if (isInside(mouseX, mouseY, profileBtnScreenX, profileBtnScreenY, profileBtnScreenW, profileBtnScreenH)) {
                         playUiClick();
                         if (this.client != null) {
-                            this.client.setScreen(new PlayerProfileScreen(selectedDetailEntry.player(), this));
+                            this.client.setScreen(new PlayerProfileScreen(selectedDetailEntry.entries.get(0).player(), this));
                         }
                         return true;
                     }
@@ -711,14 +766,29 @@ public class RankingScreen extends Screen {
                     }
                 }
 
+                if (selectedDetailEntry != null && lapsBtnScreenW > 0) {
+                    if (isInside(mouseX, mouseY, lapsBtnScreenX, lapsBtnScreenY, lapsBtnScreenW, lapsBtnScreenH)) {
+                        playUiClick();
+                        lapsExpanded = !lapsExpanded;
+                        return true;
+                    }
+                }
+
+                // ★ 서브 내역 모달 버튼 클릭 이벤트 감지
+                if (selectedDetailEntry != null && subRecordsBtnScreenW > 0) {
+                    if (isInside(mouseX, mouseY, subRecordsBtnScreenX, subRecordsBtnScreenY, subRecordsBtnScreenW, subRecordsBtnScreenH)) {
+                        playUiClick();
+                        if (this.client != null) {
+                            this.client.setScreen(new PlayerRecordsModalScreen(this, selectedDetailEntry, this.track, selectedProfileDesc));
+                        }
+                        return true;
+                    }
+                }
+
                 int startY = tableTop + 24;
 
-                // ★ 스크롤 한계를 보정하여 아이템 갯수 계산 (렌더링 영역 벗어나는 버그 방지)
                 int extraH = 0;
                 if (selectedDetailEntry != null) {
-                    boolean isSingle = "__singleplay__".equals(selectedDetailEntry.serverAddress());
-                    extraH += 16 * 3;
-
                     boolean showTime = tableW > 250;
                     boolean showBody = tableW > 320;
                     boolean showEngine = tableW > 380;
@@ -727,90 +797,48 @@ public class RankingScreen extends Screen {
                     if (!showTime) hiddenCount++;
                     if (!showBody) hiddenCount++;
                     if (!showEngine) hiddenCount++;
-                    if (hiddenCount > 0) extraH += hiddenCount * 16 + 5;
 
-                    if (isSingle && kartSpecExpanded) {
-                        String specRaw = selectedDetailEntry.kartSpecDebug();
-                        if (specRaw != null && !specRaw.isEmpty() && !specRaw.equals("없음")) {
-                            int lines = 1;
-                            if (specRaw.contains("speed")) lines++;
-                            if (specRaw.contains("accel") || specRaw.contains("boost:")) lines++;
-                            if (specRaw.contains("corner") || specRaw.contains("drift")) lines++;
-                            if (specRaw.contains("gauge") || specRaw.contains("boosttime") || specRaw.contains("maxboostcount")) lines++;
-                            if (specRaw.contains("defense")) lines++;
-                            if (specRaw.contains("draft")) lines++;
-                            extraH += lines * 16 + 10;
-                        } else {
-                            extraH += 16 + 10;
-                        }
-                    }
-                    extraH += 26;
+                    // ★ getItemHeight() 한 곳에서만 계산 (중복 계산 제거)
+                    extraH = getItemHeight(selectedDetailEntry, true, hiddenCount) - ROW_H;
                 }
 
-                // ★ maxScroll 산출 시 여유 마진(+1) 부여
+                // ★ 클릭 감지를 위해 그룹화된 배열(groupedRanking) 기준으로 렌더링 범위 산출
                 int adjustedCapacityRows = Math.max(1, (tableH - 24 - extraH) / ROW_H) + 1;
-                int maxScroll = Math.max(0, ranking.size() - adjustedCapacityRows + 1);
+                int maxScroll = Math.max(0, groupedRanking.size() - adjustedCapacityRows + 1);
 
                 tableScroll = Math.max(0, Math.min(tableScroll, maxScroll));
                 int start = tableScroll;
-                // end는 렌더링이 화면을 덮을 수 있도록 여유 있게 계산
-                int end = Math.min(start + Math.max(1, (tableH - 24) / ROW_H) + 3, ranking.size());
+                int end = Math.min(start + Math.max(1, (tableH - 24) / ROW_H) + 3, groupedRanking.size());
 
                 int currentY = startY;
                 for (int i = start; i < end; i++) {
-                    Entry e = ranking.get(i);
-                    int itemH = ROW_H;
+                    GroupedEntry grp = groupedRanking.get(i);
 
-                    if (e == selectedDetailEntry) {
-                        boolean isSingle = "__singleplay__".equals(e.serverAddress());
-                        int localExpandH = 16 * 3;
+                    boolean showTime = tableW > 250;
+                    boolean showBody = tableW > 320;
+                    boolean showEngine = tableW > 380;
+                    int hiddenCount = 0;
+                    if (!showTime) hiddenCount++;
+                    if (!showBody) hiddenCount++;
+                    if (!showEngine) hiddenCount++;
 
-                        boolean showTime = tableW > 250;
-                        boolean showBody = tableW > 320;
-                        boolean showEngine = tableW > 380;
-
-                        int hiddenCount = 0;
-                        if (!showTime) hiddenCount++;
-                        if (!showBody) hiddenCount++;
-                        if (!showEngine) hiddenCount++;
-                        if (hiddenCount > 0) {
-                            localExpandH += hiddenCount * 16 + 5;
-                        }
-
-                        if (isSingle) {
-                            if (kartSpecExpanded) {
-                                String specRaw = e.kartSpecDebug();
-                                if (specRaw != null && !specRaw.isEmpty() && !specRaw.equals("없음")) {
-                                    int lines = 1;
-                                    if (specRaw.contains("speed")) lines++;
-                                    if (specRaw.contains("accel") || specRaw.contains("boost:")) lines++;
-                                    if (specRaw.contains("corner") || specRaw.contains("drift")) lines++;
-                                    if (specRaw.contains("gauge") || specRaw.contains("boosttime") || specRaw.contains("maxboostcount")) lines++;
-                                    if (specRaw.contains("defense")) lines++;
-                                    if (specRaw.contains("draft")) lines++;
-                                    localExpandH += lines * 16 + 10;
-                                } else {
-                                    localExpandH += 16 + 10;
-                                }
-                            }
-                        }
-
-                        localExpandH += 26;
-                        itemH += localExpandH;
-                    }
+                    // ★ 높이는 getItemHeight() 한 곳에서만 계산 (중복 계산으로 박스가 이중으로 커지던 버그 수정)
+                    int itemH = getItemHeight(grp, grp == selectedDetailEntry, hiddenCount);
 
                     if (currentY > tableTop + tableH) break;
 
                     if (mouseY >= currentY - 2 && mouseY <= currentY + itemH - 2) {
                         playUiClick();
-                        if (selectedDetailEntry == e) {
+                        if (selectedDetailEntry == grp) {
                             selectedDetailEntry = null;
                             kartSpecExpanded = false;
+                            lapsExpanded = false;
                         } else {
-                            selectedDetailEntry = e;
+                            selectedDetailEntry = grp;
                             kartSpecExpanded = false;
+                            lapsExpanded = false;
                             selectedProfileDesc = "불러오는 중...";
-                            fetchProfileDesc(e.player());
+                            fetchProfileDesc(grp.entries.get(0).player());
                         }
                         return true;
                     }
@@ -841,17 +869,15 @@ public class RankingScreen extends Screen {
 
         boolean showTime   = tableW > 250; boolean showBody   = tableW > 320; boolean showEngine = tableW > 380;
 
-        // ★ 로딩 중 조기 종료(return) 전에 무조건 패널을 그리도록 호출
-        if (loading && ranking.isEmpty()) {
+        if (loading && groupedRanking.isEmpty()) {
             int cx = rightAreaX + rightAreaW / 2;
             context.drawCenteredTextWithShadow(this.textRenderer, "불러오는 중...", cx, tableTop + 26, 0xFFFFFF);
             super.render(context, mouseX, mouseY, delta);
             renderPanels(context, mouseX, mouseY);
             return;
         }
-        if (error != null && ranking.isEmpty()) {
+        if (error != null && groupedRanking.isEmpty()) {
             int cx = rightAreaX + rightAreaW / 2;
-            // ★ 에러 메시지를 자연스럽게 표시
             String displayError = error.toLowerCase().contains("http") ? "이 버전은 서비스 종료 되었습니다. 최신 버전을 이용해 주세요." : error;
             context.drawCenteredTextWithShadow(this.textRenderer, "오류: " + displayError, cx, tableTop + 26, 0xFF5555);
             super.render(context, mouseX, mouseY, delta);
@@ -882,44 +908,23 @@ public class RankingScreen extends Screen {
 
         int startY = tableTop + 24;
 
-        // ★ 스크롤 한계선(maxScroll) 보정 적용
         int extraH = 0;
         if (selectedDetailEntry != null) {
-            boolean isSingle = "__singleplay__".equals(selectedDetailEntry.serverAddress());
-            extraH += 16 * 3;
-
             int hiddenCount = 0;
             if (!showTime) hiddenCount++;
             if (!showBody) hiddenCount++;
             if (!showEngine) hiddenCount++;
-            if (hiddenCount > 0) extraH += hiddenCount * 16 + 5;
-
-            if (isSingle && kartSpecExpanded) {
-                String specRaw = selectedDetailEntry.kartSpecDebug();
-                if (specRaw != null && !specRaw.isEmpty() && !specRaw.equals("없음")) {
-                    int lines = 1;
-                    if (specRaw.contains("speed")) lines++;
-                    if (specRaw.contains("accel") || specRaw.contains("boost:")) lines++;
-                    if (specRaw.contains("corner") || specRaw.contains("drift")) lines++;
-                    if (specRaw.contains("gauge") || specRaw.contains("boosttime") || specRaw.contains("maxboostcount")) lines++;
-                    if (specRaw.contains("defense")) lines++;
-                    if (specRaw.contains("draft")) lines++;
-                    extraH += lines * 16 + 10;
-                } else {
-                    extraH += 16 + 10;
-                }
-            }
-            extraH += 26;
+            // ★ getItemHeight()에서 이미 계산된 확장분만 취함(ROW_H 제외) — 중복 계산 제거
+            extraH = getItemHeight(selectedDetailEntry, true, hiddenCount) - ROW_H;
         }
 
-        // ★ maxScroll 산출 시 여유 마진(+1) 부여
+        // ★ groupedRanking 사이즈 기준으로 페이징 계산
         int adjustedCapacityRows = Math.max(1, (tableH - 24 - extraH) / ROW_H) + 1;
-        int maxScroll = Math.max(0, ranking.size() - adjustedCapacityRows + 1);
+        int maxScroll = Math.max(0, groupedRanking.size() - adjustedCapacityRows + 1);
 
         tableScroll = Math.max(0, Math.min(tableScroll, maxScroll));
         int start = tableScroll;
-        // end는 화면이 잘리지 않게 충분히 길게 확보
-        int end = Math.min(start + Math.max(1, (tableH - 24) / ROW_H) + 3, ranking.size());
+        int end = Math.min(start + Math.max(1, (tableH - 24) / ROW_H) + 3, groupedRanking.size());
 
         String myName = MinecraftClient.getInstance().getSession().getUsername();
 
@@ -927,58 +932,39 @@ public class RankingScreen extends Screen {
 
         profileBtnScreenW = 0;
         specBtnScreenW = 0;
+        lapsBtnScreenW = 0;
+        subRecordsBtnScreenW = 0;
 
         for (int i = start; i < end; i++) {
-            Entry e = ranking.get(i); int rank = i + 1;
-            boolean isMe = e.player().equalsIgnoreCase(myName);
-            boolean isExpanded = (e == selectedDetailEntry);
-
-            int itemH = ROW_H;
-            int localExpandH = 0;
-            boolean isSingle = "__singleplay__".equals(e.serverAddress());
+            GroupedEntry grp = groupedRanking.get(i);
+            Entry topEntry = grp.entries.get(0);
+            boolean isMe = topEntry.player().equalsIgnoreCase(myName);
+            boolean isExpanded = (grp == selectedDetailEntry);
+            boolean isSingle = "__singleplay__".equals(topEntry.serverAddress());
 
             int hiddenCount = 0;
-            if (isExpanded) {
-                localExpandH += 16 * 3;
+            if (!showTime) hiddenCount++;
+            if (!showBody) hiddenCount++;
+            if (!showEngine) hiddenCount++;
 
-                if (!showTime) hiddenCount++;
-                if (!showBody) hiddenCount++;
-                if (!showEngine) hiddenCount++;
-                if (hiddenCount > 0) {
-                    localExpandH += hiddenCount * 16 + 5;
-                }
-
-                if (isSingle) {
-                    if (kartSpecExpanded) {
-                        String specRaw = e.kartSpecDebug();
-                        if (specRaw != null && !specRaw.isEmpty() && !specRaw.equals("없음")) {
-                            int lines = 1;
-                            if (specRaw.contains("speed")) lines++;
-                            if (specRaw.contains("accel") || specRaw.contains("boost:")) lines++;
-                            if (specRaw.contains("corner") || specRaw.contains("drift")) lines++;
-                            if (specRaw.contains("gauge") || specRaw.contains("boosttime") || specRaw.contains("maxboostcount")) lines++;
-                            if (specRaw.contains("defense")) lines++;
-                            if (specRaw.contains("draft")) lines++;
-                            localExpandH += lines * 16 + 10;
-                        } else {
-                            localExpandH += 16 + 10;
-                        }
-                    }
-                }
-                itemH += localExpandH + 26;
-            }
+            // ★ 높이는 getItemHeight() 한 곳에서만 계산합니다.
+            //    (이전에는 여기서 동일한 확장 높이를 한 번 더 더해서 박스가 실제 필요한 높이의 거의 2배가 되던 버그가 있었습니다)
+            int itemH = getItemHeight(grp, isExpanded, hiddenCount);
 
             if (currentY > tableTop + tableH) break;
 
+            int rankColor = (grp.startRank == 1) ? 0xFFFFE066 : (grp.startRank == 2) ? 0xFFE6E6E6 : (grp.startRank == 3) ? 0xFFFFB36B : 0xFFFFFFFF;
             int bgColor = 0x22000000;
+
             if (isExpanded) bgColor = 0x550B0B0B;
             else if (isMe) bgColor = 0x6644AA44;
-            else if (rank == 1) bgColor = 0x44FFD700;
-            else if (rank == 2) bgColor = 0x44C0C0C0;
-            else if (rank == 3) bgColor = 0x44CD7F32;
+            else if (grp.startRank == 1) bgColor = 0x44FFD700;
+            else if (grp.startRank == 2) bgColor = 0x44C0C0C0;
+            else if (grp.startRank == 3) bgColor = 0x44CD7F32;
             else if (((i - start) & 1) == 0) bgColor = 0x00000000;
 
             context.fill(tableX + 1, currentY - 2, tableX + tableW - 1, currentY + itemH - 2, bgColor);
+
             if (isExpanded) {
                 drawRectBorder(context, tableX + 1, currentY - 2, tableW - 2, itemH, 0xFF444444);
             }
@@ -993,25 +979,32 @@ public class RankingScreen extends Screen {
             int sY = (int)((currentY + (ROW_H - 10 * tableScale) / 2) / tableScale);
             int sPlayerX = (int)(colPlayerX / tableScale);
 
-            int rankColor = (rank == 1) ? 0xFFFFE066 : (rank == 2) ? 0xFFE6E6E6 : (rank == 3) ? 0xFFFFB36B : 0xFFFFFFFF;
-            context.drawTextWithShadow(this.textRenderer, rank + "위", (int)(colRankX / tableScale), sY, rankColor);
+            // ★ 순위 렌더링 (대표 1순위만 표시하되, 서브 기록이 있으면 '+n' 표시 추가)
+            String rankStr = grp.startRank + "위";
+            context.drawTextWithShadow(this.textRenderer, rankStr, (int)(colRankX / tableScale), sY, rankColor);
+
+            if (!isExpanded && grp.entries.size() > 1) {
+                int plusX = (int)(colRankX / tableScale) + this.textRenderer.getWidth(rankStr) + 2;
+                String plusStr = "+" + grp.entries.size();
+                context.drawTextWithShadow(this.textRenderer, plusStr, plusX, sY, 0xFFFFFF00);
+            }
 
             String repText = "";
-            if (e.repTitle() != null && !e.repTitle().isEmpty()) { repText = " [" + e.repTitle() + "]"; }
+            if (topEntry.repTitle() != null && !topEntry.repTitle().isEmpty()) { repText = " [" + topEntry.repTitle() + "]"; }
 
             int nextColX = showTime ? colTimeX : (showBody ? colBodyX : (showEngine ? colEngineX : tableX + tableW));
             int maxPlayerW = Math.max(0, (int)((nextColX - colPlayerX - 5) / tableScale));
 
             if (repText.isEmpty()) {
-                context.drawTextWithShadow(this.textRenderer, trimWithEllipsis(e.player(), maxPlayerW), sPlayerX, sY, 0xFFFFFF);
+                context.drawTextWithShadow(this.textRenderer, trimWithEllipsis(topEntry.player(), maxPlayerW), sPlayerX, sY, 0xFFFFFF);
             } else {
                 int maxNameW = Math.max(0, maxPlayerW - this.textRenderer.getWidth(repText));
                 if (maxNameW <= 0) {
-                    context.drawTextWithShadow(this.textRenderer, trimWithEllipsis(e.player() + repText, maxPlayerW), sPlayerX, sY, 0xFFFFFF);
+                    context.drawTextWithShadow(this.textRenderer, trimWithEllipsis(topEntry.player() + repText, maxPlayerW), sPlayerX, sY, 0xFFFFFF);
                 } else {
-                    String trimmedName = trimWithEllipsis(e.player(), maxNameW);
+                    String trimmedName = trimWithEllipsis(topEntry.player(), maxNameW);
                     context.drawTextWithShadow(this.textRenderer, trimmedName, sPlayerX, sY, 0xFFFFFF);
-                    context.drawTextWithShadow(this.textRenderer, repText, sPlayerX + this.textRenderer.getWidth(trimmedName), sY, parseHex(e.repColor(), 0x55FFFF));
+                    context.drawTextWithShadow(this.textRenderer, repText, sPlayerX + this.textRenderer.getWidth(trimmedName), sY, parseHex(topEntry.repColor(), 0x55FFFF));
                 }
             }
 
@@ -1019,13 +1012,29 @@ public class RankingScreen extends Screen {
             if (showTime) {
                 int nextTimeColX = showBody ? colBodyX : (showEngine ? colEngineX : tableX + tableW);
                 int maxTimeW = Math.max(0, (int)((nextTimeColX - colTimeX - 5) / tableScale));
-                context.drawTextWithShadow(this.textRenderer, trimWithEllipsis(e.timeStr(), maxTimeW), (int)(colTimeX / tableScale), sY, 0xFFFFFF);
+                context.drawTextWithShadow(this.textRenderer, trimWithEllipsis(topEntry.timeStr(), maxTimeW), (int)(colTimeX / tableScale), sY, 0xFFFFFF);
+
+                if (isExpanded && topEntry.lapData() != null && !topEntry.lapData().isEmpty() && !topEntry.lapData().equals("없음")) {
+                    String btnText = lapsExpanded ? "[-]" : "[+]";
+                    int btnX = (int)(colTimeX / tableScale) + this.textRenderer.getWidth(trimWithEllipsis(topEntry.timeStr(), maxTimeW)) + 5;
+
+                    lapsBtnScreenX = (int)(btnX * tableScale);
+                    lapsBtnScreenY = (int)(sY * tableScale);
+                    lapsBtnScreenW = (int)(this.textRenderer.getWidth(btnText) * tableScale);
+                    lapsBtnScreenH = (int)(10 * tableScale);
+
+                    boolean hoveringLaps = isInside(mouseX, mouseY, lapsBtnScreenX, lapsBtnScreenY, lapsBtnScreenW, lapsBtnScreenH);
+                    int btnColor = lapsExpanded ? (hoveringLaps ? 0xFFFF7777 : 0xFFFF5555) : (hoveringLaps ? 0xFF77FF77 : 0xFF55FF55);
+
+                    context.drawTextWithShadow(textRenderer, btnText, btnX, sY, btnColor);
+                }
+
             } else hiddenSomething = true;
 
             if (showBody) {
                 int nextBodyColX = showEngine ? colEngineX : tableX + tableW;
                 int maxBodyW = Math.max(0, (int)((nextBodyColX - colBodyX - 5) / tableScale));
-                String bodyLabel = TireUtil.composeBodyLabel(e.bodyName(), e.tireName());
+                String bodyLabel = TireUtil.composeBodyLabel(topEntry.bodyName(), topEntry.tireName());
                 context.drawTextWithShadow(this.textRenderer, trimWithEllipsis(bodyLabel, maxBodyW), (int)(colBodyX / tableScale), sY, 0xFFFFFF);
 
                 if (isSingle && isExpanded) {
@@ -1046,12 +1055,13 @@ public class RankingScreen extends Screen {
 
             if (showEngine) {
                 int maxEngW = Math.max(0, (int)((tableX + tableW - colEngineX - 5) / tableScale));
-                context.drawTextWithShadow(this.textRenderer, trimWithEllipsis(normalizeEngine(e.engineName()), maxEngW), (int)(colEngineX / tableScale), sY, 0xFFFFFF);
+                context.drawTextWithShadow(this.textRenderer, trimWithEllipsis(normalizeEngine(topEntry.engineName()), maxEngW), (int)(colEngineX / tableScale), sY, 0xFFFFFF);
             } else hiddenSomething = true;
 
             if (hiddenSomething) {
                 context.drawTextWithShadow(this.textRenderer, "+", (int)((tableX + tableW - 20) / tableScale), sY, 0xAAAAAA);
             }
+
             context.getMatrices().pop();
 
             if (isExpanded) {
@@ -1059,42 +1069,65 @@ public class RankingScreen extends Screen {
                 context.getMatrices().scale(tableScale, tableScale, 1.0f);
 
                 int infoX = (int)((colPlayerX + 5) / tableScale);
-                int infoY = sY + 20;
+                int infoY = sY + 16;
                 int lineH = 16;
                 int maxW = (int)((tableW - 50) / tableScale);
 
                 context.drawTextWithShadow(textRenderer, trimWithEllipsis("§7" + selectedProfileDesc, maxW), infoX, infoY, 0xAAAAAA);
                 infoY += lineH;
-                infoY += 5;
+                infoY += 2;
 
                 if (hiddenCount > 0) {
                     if (!showTime) {
-                        context.drawTextWithShadow(textRenderer, "§8기록: §e" + e.timeStr(), infoX, infoY, 0xFFFFFF);
+                        context.drawTextWithShadow(textRenderer, "§8기록: §e" + topEntry.timeStr(), infoX, infoY, 0xFFFFFF);
                         infoY += lineH;
                     }
                     if (!showBody) {
-                        context.drawTextWithShadow(textRenderer, "§8카트: §f" + TireUtil.composeBodyLabel(e.bodyName(), e.tireName()), infoX, infoY, 0xFFFFFF);
+                        context.drawTextWithShadow(textRenderer, "§8카트: §f" + TireUtil.composeBodyLabel(topEntry.bodyName(), topEntry.tireName()), infoX, infoY, 0xFFFFFF);
                         infoY += lineH;
                     }
                     if (!showEngine) {
-                        context.drawTextWithShadow(textRenderer, "§8엔진: §f" + normalizeEngine(e.engineName()), infoX, infoY, 0xFFFFFF);
+                        context.drawTextWithShadow(textRenderer, "§8엔진: §f" + normalizeEngine(topEntry.engineName()), infoX, infoY, 0xFFFFFF);
                         infoY += lineH;
                     }
                 }
 
-                context.drawTextWithShadow(textRenderer, "§8모드: §f" + (e.modes() == null || e.modes().isEmpty() ? "없음" : e.modes()), infoX, infoY, 0xFFFFFF);
+                context.drawTextWithShadow(textRenderer, "§8모드: §f" + (topEntry.modes() == null || topEntry.modes().isEmpty() ? "없음" : topEntry.modes()), infoX, infoY, 0xFFFFFF);
                 infoY += lineH;
-                String dateStr = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm").format(new java.util.Date(e.submittedAtMs()));
+                String dateStr = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm").format(new java.util.Date(topEntry.submittedAtMs()));
                 context.drawTextWithShadow(textRenderer, "§8등록: §7" + dateStr, infoX, infoY, 0xAAAAAA);
                 infoY += lineH;
 
+                if (lapsExpanded) {
+                    String lapRaw = topEntry.lapData();
+                    if (lapRaw == null || lapRaw.isEmpty() || lapRaw.equals("없음")) {
+                        context.drawTextWithShadow(textRenderer, "§c랩타임 정보 없음", infoX, infoY, 0xAAAAAA);
+                        infoY += lineH;
+                    } else {
+                        String headerStr = "§b----- 바퀴별 기록 -----";
+                        context.drawTextWithShadow(textRenderer, headerStr, infoX, infoY, 0xFFFFFF);
+                        infoY += lineH;
+
+                        String[] laps = lapRaw.split(",");
+                        for (String lap : laps) {
+                            String[] parts = lap.split(":");
+                            if (parts.length >= 2) {
+                                String lapNumStr = parts[0].replace("lap", "").trim();
+                                String lapTimeStr = lap.substring(parts[0].length() + 1).trim();
+                                context.drawTextWithShadow(textRenderer, "§e" + lapNumStr + "바퀴: §f" + lapTimeStr, infoX, infoY, 0xFFFFFF);
+                                infoY += lineH;
+                            }
+                        }
+                    }
+                }
+
                 if (isSingle && kartSpecExpanded) {
-                    String specRaw = e.kartSpecDebug();
+                    String specRaw = topEntry.kartSpecDebug();
                     if (specRaw == null || specRaw.isEmpty() || specRaw.equals("없음")) {
                         context.drawTextWithShadow(textRenderer, "§c스탯 정보 없음", infoX, infoY, 0xAAAAAA);
                         infoY += lineH;
                     } else {
-                        String kartName = e.bodyName();
+                        String kartName = topEntry.bodyName();
                         if (kartName == null || kartName.equals("UNKNOWN") || kartName.isEmpty()) kartName = "카트바디";
                         String headerStr = "§e----- " + kartName + " 스탯 -----";
                         context.drawTextWithShadow(textRenderer, headerStr, infoX, infoY, 0xFFFFFF);
@@ -1131,8 +1164,10 @@ public class RankingScreen extends Screen {
                         infoY += ((displayLines.size() + 1) / 2) * lineH;
                     }
                 }
+
                 context.getMatrices().pop();
 
+                // 하단 버튼 렌더링 위치 설정
                 int btnW = 26;
                 int btnH = 20;
                 int btnX = tableX + 10;
@@ -1147,8 +1182,24 @@ public class RankingScreen extends Screen {
                 context.fill(btnX, btnY, btnX + btnW, btnY + btnH, hoverBtn ? 0xFF444444 : 0xFF222222);
                 drawRectBorder(context, btnX, btnY, btnW, btnH, hoverBtn ? 0xFF888888 : 0xFF555555);
                 context.drawCenteredTextWithShadow(textRenderer, "👤", btnX + btnW / 2, btnY + 6, 0xFFFFFF);
-                // 툴팁
                 if (hoverBtn) renderTooltip(context, net.minecraft.text.Text.literal("프로필 보기"), mouseX, mouseY);
+
+                // ★ 서브 항목 버튼 렌더링 (항목이 2개 이상일 때)
+                if (grp.entries.size() > 1) {
+                    int subBtnX = btnX + btnW + 5;
+                    int subBtnW = 26;
+
+                    subRecordsBtnScreenX = subBtnX;
+                    subRecordsBtnScreenY = btnY;
+                    subRecordsBtnScreenW = subBtnW;
+                    subRecordsBtnScreenH = btnH;
+
+                    boolean hoverSubBtn = isInside(mouseX, mouseY, subBtnX, btnY, subBtnW, btnH);
+                    context.fill(subBtnX, btnY, subBtnX + subBtnW, btnY + btnH, hoverSubBtn ? 0xFF333377 : 0xFF111144);
+                    drawRectBorder(context, subBtnX, btnY, subBtnW, btnH, hoverSubBtn ? 0xFF5555AA : 0xFF333388);
+                    context.drawCenteredTextWithShadow(textRenderer, "⏱+", subBtnX + subBtnW / 2, btnY + 6, 0xFFFFFF);
+                    if (hoverSubBtn) renderTooltip(context, net.minecraft.text.Text.literal("기록 모두 보기"), mouseX, mouseY);
+                }
             }
 
             currentY += itemH;
@@ -1160,16 +1211,14 @@ public class RankingScreen extends Screen {
             int barW = 6; int barX = tableX + tableW - barW - 2; int barY = tableTop + 24; int barH = tableH - 26;
             context.fill(barX, barY, barX + barW, barY + barH, 0x55000000);
 
-            // ★ 스크롤 썸 높이 및 위치 계산 시 maxScroll 값의 변경에 따라 오작동하지 않게 안전하게 계산
             float scrollProgress = maxScroll > 0 ? (float) tableScroll / maxScroll : 0;
-            int thumbH = Math.max(10, (int) (barH * ((float) rowsPerPage / ranking.size())));
+            int thumbH = Math.max(10, (int) (barH * ((float) rowsPerPage / groupedRanking.size())));
             int thumbY = barY + (int) ((barH - thumbH) * scrollProgress);
             context.fill(barX, thumbY, barX + barW, thumbY + thumbH, 0xFF888888);
         }
 
         super.render(context, mouseX, mouseY, delta);
 
-        // ★ 원래 있던 위치의 호출도 메서드로 깔끔하게 변경
         renderPanels(context, mouseX, mouseY);
     }
     @Override
@@ -1182,7 +1231,21 @@ public class RankingScreen extends Screen {
 
     @Override public boolean shouldPause() { return false; }
 
-    public record Entry(String player, String repTitle, String repColor, String timeStr, long timeMillis, String engineName, String bodyName, String tireName, String modes, long submittedAtMs, String serverAddress, String kartSpecDebug) {}
+    public record Entry(String player, String repTitle, String repColor, String timeStr, long timeMillis, String engineName, String bodyName, String tireName, String modes, long submittedAtMs, String serverAddress, String kartSpecDebug, String lapData) {}
+
+    // ★ 렌더링용 그룹 클래스 추가
+    public static class GroupedEntry {
+        public final int startRank;
+        public int endRank;
+        public final List<Entry> entries = new ArrayList<>();
+        // ★ entries와 같은 순서로, 각 기록의 "실제" 전체 랭킹 순위를 저장 (PlayerRecordsModalScreen에서 사용)
+        public final List<Integer> entryRanks = new ArrayList<>();
+
+        public GroupedEntry(int startRank, int endRank) {
+            this.startRank = startRank;
+            this.endRank = endRank;
+        }
+    }
 
     private static String safeString(JsonObject o, String key, String def) { return o.has(key) && !o.get(key).isJsonNull() ? o.get(key).getAsString() : def; }
     private static long safeLong(JsonObject o, String key, long def) { return o.has(key) && !o.get(key).isJsonNull() ? o.get(key).getAsLong() : def; }
@@ -1212,12 +1275,11 @@ public class RankingScreen extends Screen {
                     com.google.gson.JsonObject reqBody2 = new com.google.gson.JsonObject();
                     reqBody2.addProperty("p_server_address", CurrentServerHolder.getForQuery());
                     reqBody2.addProperty("p_req_player", reqPlayer2);
-                    JsonObject res = Net.postJson(SUPABASE_RPC_URL + "get_all_rankings_v3",
+                    JsonObject res = Net.postJson(SUPABASE_RPC_URL + "get_all_rankings_v4",
                             reqBody2.toString());
                     if (!res.has("ok") || !res.get("ok").getAsBoolean()) {
                         String rawErr = safeString(res, "error", "unknown error");
 
-                        // ★ 에러 메시지 매핑 (싱글플레이 차단 포함)
                         if (rawErr.equals("RESTRICTED_DEV_SERVER")) {
                             err = safeString(res, "message", "개발 서버 접근 권한이 없습니다.");
                         } else if (rawErr.equals("SINGLEPLAY_RESTRICTED")) {
@@ -1261,7 +1323,8 @@ public class RankingScreen extends Screen {
                                                 safeString(o, "modes", "없음"),
                                                 safeLong(o, "submittedAtMs", 0L),
                                                 getAnyString(o, "serverAddress", "server_address", "UNKNOWN"),
-                                                getAnyString(o, "kartSpecDebug", "kart_spec_debug", "없음")
+                                                getAnyString(o, "kartSpecDebug", "kart_spec_debug", "없음"),
+                                                getAnyString(o, "lapData", "lap_data", "")
                                         ));
                                     }
                                 }

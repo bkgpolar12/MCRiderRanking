@@ -15,6 +15,7 @@ import net.minecraft.block.Block;
 import net.minecraft.registry.RegistryKeys;
 import net.minecraft.registry.tag.TagKey;
 import net.minecraft.util.Identifier;
+import net.minecraft.world.GameMode;
 
 import net.minecraft.nbt.NbtCompound;
 import net.minecraft.resource.Resource;
@@ -74,19 +75,6 @@ public class InGameHudMixin {
 	@Unique private long lastSoloFailMsgMs = 0;
 	@Unique private static final long SOLO_FAIL_COOLDOWN_MS = 1500;
 
-	// ★ 집단 타임어택 대응: 'kart-multi-player' 태그 + 모험모드 상태에서 카운트다운("3")이 뜬 순간에만
-	//   기록 등록이 "무장"됩니다. 서브타이틀이 기록 형식과 일치할 때 한 번 소비되며,
-	//   완주 실패 또는 모험모드 이탈 시 즉시 해제됩니다.
-	@Unique private boolean multiPlayerSubmitArmed = false;
-
-	// ★ 집단 타임어택에서는 카운트다운 때문에 서브타이틀이 반복적으로 초기화/재생성되면서
-	//   기록 등록 시도가 도배될 수 있어, 한 번 시도한 뒤에는 일정 시간 동안 재시도를 막습니다.
-	@Unique private long lastSubmitAttemptMs = 0L;
-	@Unique private static final long SUBMIT_ATTEMPT_COOLDOWN_MS = 10_000L;
-
-	@Unique private static final double NEAR_PLAYER_RADIUS = 25.0;
-	@Unique private static final double NEAR_PLAYER_RADIUS_SQ = NEAR_PLAYER_RADIUS * NEAR_PLAYER_RADIUS;
-
 	@Unique private static String lastDebugKey = null;
 	@Unique private static long lastDebugAtMs = 0;
 
@@ -100,6 +88,17 @@ public class InGameHudMixin {
 
 	@Unique private static ClientWorld lastWorld = null;
 	@Unique private static boolean cachedSingleplayerGameSystem = false;
+
+	// ★ 가짜 기록(관전 버그) 방지를 위한 상태 변수
+	@Unique private boolean isRacing = false;
+	@Unique private ClientWorld currentRenderWorld = null;
+
+	// ★ 랩타임 연동 및 서브타이틀 반복 방지 플래그
+	@Unique private boolean multiPlayerSubmitArmed = false;
+
+	// ★ 기록 등록 도배 방지를 위한 10초 쿨타임 변수
+	@Unique private long lastSubmitAttemptMs = 0L;
+	@Unique private static final long SUBMIT_ATTEMPT_COOLDOWN_MS = 10_000L;
 
 	@Unique private static final TagKey<Block> BLACK_BLOCKS = TagKey.of(
 			RegistryKeys.BLOCK,
@@ -115,19 +114,26 @@ public class InGameHudMixin {
 	@Unique private static final double ENGINE_SCAN_RADIUS_XZ = 3.0;
 	@Unique private static final double ENGINE_SCAN_RADIUS_Y  = 6.0;
 
+	@Unique private static final double NEAR_PLAYER_RADIUS = 25.0;
+	@Unique private static final double NEAR_PLAYER_RADIUS_SQ = NEAR_PLAYER_RADIUS * NEAR_PLAYER_RADIUS;
+
 	@Unique private static String cachedTireName = "UNKNOWN";
 	@Unique private static long lastTireScanMs = 0;
 	@Unique private static final long TIRE_SCAN_INTERVAL_MS = 800;
 
-	// ★ 타이어 인식이 실패할 경우를 대비한 백업(캐싱) 변수
+	// 타이어 인식이 실패할 경우를 대비한 백업(캐싱) 변수
 	@Unique private static String fallbackTireName = "UNKNOWN";
 	@Unique private static long lastFallbackScanMs = 0;
 
 	@Unique
-	private static final Box LOBBY_BOX = new Box(
-			-21, 3, 155,
-			-15, -1, 152
-	);
+	private static final Box LOBBY_BOX = new Box(-21, 3, 155, -15, -1, 152);
+
+	// ★ 새로 추가된 타임어택 구역 (실제 좌표로 반드시 수정해 주세요!)
+	@Unique
+	private static final Box ATTACK_BOX = new Box(0, 0, 0, 0, 0, 0);
+
+	@Unique
+	private static final Box DEV_ATTACK_BOX = new Box(0, 0, 0, 0, 0, 0);
 
 	@Unique
 	private static final Pattern ALLOWED_KART_FILE_PATTERN = Pattern.compile("get(classic|common|rare|legend|unique|special)kart(?:-\\d+)?\\.mcfunction");
@@ -135,18 +141,33 @@ public class InGameHudMixin {
 	@Inject(method = "render", at = @At("HEAD"))
 	private void onRender(CallbackInfo ci) {
 		MinecraftClient client = MinecraftClient.getInstance();
-		if (client.player == null || client.world == null) return;
+		if (client.player == null || client.world == null) {
+			if (this.isRacing && DebugLog.enabled()) DebugLog.chat("§c[Debug] 서버/월드 퇴장으로 인해 isRacing 강제 초기화");
+			this.isRacing = false;
+			this.multiPlayerSubmitArmed = false;
+			AutoSubmitter.multiPlayerSubmitArmed = false;
+			return;
+		}
+
+		if (this.currentRenderWorld != client.world) {
+			if (this.isRacing && DebugLog.enabled()) DebugLog.chat("§c[Debug] 월드/차원 변경 감지로 인해 isRacing 강제 초기화");
+			this.currentRenderWorld = client.world;
+			this.isRacing = false;
+			this.multiPlayerSubmitArmed = false;
+			AutoSubmitter.multiPlayerSubmitArmed = false;
+		}
+
+		GameMode currentGameMode = client.interactionManager != null ? client.interactionManager.getCurrentGameMode() : null;
+
+		if (currentGameMode != GameMode.ADVENTURE) {
+			if (this.isRacing && DebugLog.enabled()) DebugLog.chat("§c[Debug] 게임모드 변경(모험 아님)으로 인해 isRacing 강제 종료");
+			this.isRacing = false;
+			this.multiPlayerSubmitArmed = false;
+			AutoSubmitter.multiPlayerSubmitArmed = false;
+		}
 
 		updateCurrentServerHolder(client);
 
-		// ★ 실시간 게임모드 감시: 모험모드가 아니면 기록 등록 무장을 즉시(매 프레임) 해제
-		net.minecraft.world.GameMode currentGameMode = client.interactionManager != null
-				? client.interactionManager.getCurrentGameMode() : null;
-		if (currentGameMode != net.minecraft.world.GameMode.ADVENTURE) {
-			multiPlayerSubmitArmed = false;
-		}
-
-		// ★ [백그라운드 타이어 스캔] 1초마다 유효한 타이어 값을 찾으면 미리 캐싱해둡니다.
 		long currentMs = System.currentTimeMillis();
 		if (currentMs - lastFallbackScanMs > 1000) {
 			lastFallbackScanMs = currentMs;
@@ -167,41 +188,17 @@ public class InGameHudMixin {
 
 			BodyCaptureManager.tickScan();
 
-			if ("3".equals(t)) {
-				BodyCaptureManager.onTitle3();
-
-				// ★ 집단 타임어택 대응: 'kart-multi-player' 태그 보유 + 모험모드일 때만 기록 등록 무장
-				boolean isAdventure = currentGameMode == net.minecraft.world.GameMode.ADVENTURE;
-				if (isAdventure) {
-					multiPlayerSubmitArmed = true;
-				}
-
-				long nowTire = System.currentTimeMillis();
-				if (nowTire - lastTireScanMs > TIRE_SCAN_INTERVAL_MS) {
-					lastTireScanMs = nowTire;
-					String tire = findTireNameFromAttribute();
-
-					// ★ 타이어 인식이 안 될 경우 미리 캐싱해둔 백업 값을 사용
-					if ("UNKNOWN".equals(tire) && !"UNKNOWN".equals(fallbackTireName)) {
-						cachedTireName = fallbackTireName;
-					} else {
-						cachedTireName = tire;
-						// 유효한 값을 찾았으면 백업도 함께 갱신
-						if (!"UNKNOWN".equals(tire)) {
-							fallbackTireName = tire;
-						}
-					}
-
-					if (DebugLog.enabled()) {
-						DebugLog.chat("§d[Tire] 감지: " + cachedTireName + ("UNKNOWN".equals(tire) ? " (백업 사용됨)" : ""));
-					}
-				}
-			}
+			// ★ 기존에 바깥에 꺼내져 있던 타이틀 "3" 감지 관련 처리를
+			// 도배 방지를 위해 상태가 바뀌었을 때(!t.equals(lastTitle)) 실행되는 블록 내부로 통합했습니다.
+			// (아래쪽 코드 블록 참고)
 
 			if ("완주 실패".equals(t)) {
+				if (isRacing && DebugLog.enabled()) DebugLog.chat("§c[Debug] '완주 실패' 타이틀 감지로 인해 isRacing 강제 종료");
+				isRacing = false;
+				multiPlayerSubmitArmed = false;
+				AutoSubmitter.multiPlayerSubmitArmed = false;
 				BodyCaptureManager.onRaceFailed();
 				try { ModGatekeeper.freezeNow(); } catch (Throwable ignored) {}
-				multiPlayerSubmitArmed = false; // ★ 완주 실패 시 기록 등록 무장 해제
 			}
 
 			if ("1".equals(t)) {
@@ -225,7 +222,6 @@ public class InGameHudMixin {
 
 					if (track.toUpperCase().contains("RANDOM")) {
 						if (random_text) {
-							//client.player.sendMessage(Text.literal("§c[MCRiderRanking] 랜덤 트랙은 기록되지 않습니다."), false);
 							random_text = false;
 						}
 					} else if (track.isBlank()) {
@@ -242,11 +238,16 @@ public class InGameHudMixin {
 							String bodyName = BodyCaptureManager.getCachedKartBodyNameOrUnknown();
 
 							if (isValidKartStat(client, bodyName)) {
+								if (DebugLog.enabled()) DebugLog.chat("§a[Debug] (재시도) 스탯 검증 완료! AutoSubmitter 로 전송!");
 								String kartSpecDebug = buildKartSpecString(client);
+								String lapsCsv = String.join(",", AutoSubmitter.lapTimes);
 								AutoSubmitter.submitAsync(
 										player, track, pendingTimeStr, pendingTimeMillis,
-										0, engineName, bodyName, cachedTireName, modesCsv, kartSpecDebug
+										0, engineName, bodyName, cachedTireName, modesCsv, kartSpecDebug, lapsCsv
 								);
+								lastSubmitAttemptMs = System.currentTimeMillis();
+							} else {
+								if (DebugLog.enabled()) DebugLog.chat("§c[Debug] (재시도) 등록 차단: 카트 스탯 검증(isValidKartStat) 실패");
 							}
 						}
 					}
@@ -255,6 +256,7 @@ public class InGameHudMixin {
 
 				} else if (trackRetryCount >= 5) {
 					pendingTrackRetry = false;
+					if (DebugLog.enabled()) DebugLog.chat("§c[Debug] (재시도) 5회 실패로 최종 등록 취소됨.");
 					client.player.sendMessage(Text.literal("§c[MCRiderRanking] 트랙 이름을 찾을 수 없어 기록되지 않습니다."), false);
 					pendingTimeStr = null;
 					pendingTimeMillis = -1;
@@ -274,6 +276,24 @@ public class InGameHudMixin {
 				}
 
 				if (t.equals("3")) {
+					// ★ [도배 방지용 통합] 타이틀이 "3"으로 막 바뀌었을 때 단 한 번만 검사 및 디버그 출력
+					BodyCaptureManager.onTitle3();
+
+					boolean isAdventure = currentGameMode == GameMode.ADVENTURE;
+
+					if (isAdventure) {
+						isRacing = true;
+						multiPlayerSubmitArmed = true;
+						AutoSubmitter.multiPlayerSubmitArmed = true;
+						AutoSubmitter.lapTimes.clear(); // 무장 시 랩타임 초기화
+						if (DebugLog.enabled()) DebugLog.chat("§b[Debug] 레이싱 시작 감지! (isRacing = true) Adv:" + isAdventure);
+					} else {
+						isRacing = false;
+						multiPlayerSubmitArmed = false;
+						AutoSubmitter.multiPlayerSubmitArmed = false;
+						if (DebugLog.enabled()) DebugLog.chat("§c[Debug] '3' 감지했으나 조건 미달로 레이싱 무시. Adv:" + isAdventure);
+					}
+
 					long now = System.currentTimeMillis();
 					if (now - lastEngineScanMs > 800) {
 						lastEngineScanMs = now;
@@ -285,77 +305,87 @@ public class InGameHudMixin {
 							logEngine("§a[Engine] 감지 성공: " + cachedEngineName);
 						} else {
 							logEngine("§c[Engine] 감지 실패(주변 텍스트디스플레이 없음/패턴 불일치)");
+							// ★ 엔진 감지 실패 시 등록 무장 강제 해제
+							multiPlayerSubmitArmed = false;
+							AutoSubmitter.multiPlayerSubmitArmed = false;
+						}
+					}
+
+					long nowTire = System.currentTimeMillis();
+					if (nowTire - lastTireScanMs > TIRE_SCAN_INTERVAL_MS) {
+						lastTireScanMs = nowTire;
+						String tire = findTireNameFromAttribute();
+
+						if ("UNKNOWN".equals(tire) && !"UNKNOWN".equals(fallbackTireName)) {
+							cachedTireName = fallbackTireName;
+						} else {
+							cachedTireName = tire;
+							if (!"UNKNOWN".equals(tire)) fallbackTireName = tire;
+						}
+
+						if (DebugLog.enabled()) {
+							DebugLog.chat("§d[Tire] 감지: " + cachedTireName + ("UNKNOWN".equals(tire) ? " (백업 사용됨)" : ""));
 						}
 					}
 				}
 			}
 
 			if (!s.equals(lastSubtitle) && s.matches("^\\d{2}:\\d{2}\\.\\d{3}$")) {
-				// ★ 무장 상태를 스냅샷으로 소비하고 즉시 해제 (다음 카운트다운("3")에서 재무장)
+				if (DebugLog.enabled()) DebugLog.chat("§e[Debug] 서브타이틀 기록 형식 감지: " + s);
+				boolean shouldSubmit = true;
+
 				boolean wasArmed = multiPlayerSubmitArmed;
 				multiPlayerSubmitArmed = false;
-
-				boolean shouldSubmit = wasArmed;
-
-				if (DebugLog.enabled()) {
-					DebugLog.chat("§7[Submit] 감지: " + s
-							+ " | armed=" + wasArmed
-							+ " | soloOk=" + soloOk
-							+ " | gameMode=" + currentGameMode
-							+ " | autoSubmit=" + ModConfig.get().autoSubmitEnabled);
-				}
+				AutoSubmitter.multiPlayerSubmitArmed = false; // 상태 동기화
 
 				if (!wasArmed) {
-					if (DebugLog.enabled()) {
-						DebugLog.chat("§c[Submit] 차단: 무장 안됨 (카운트다운 시점에 모험모드 조건 미충족)");
-					}
+					shouldSubmit = false;
+					if (DebugLog.enabled()) DebugLog.chat("§c[Debug] 등록 차단: multiPlayerSubmitArmed 가 false 입니다.");
 				}
 
-				if (!soloOk) {
-					// ★ 혼자가 아닐 때 고스트 타임어택 환경(3개 모드 모두 포함)인지 확인
+				if (System.currentTimeMillis() - lastSubmitAttemptMs < SUBMIT_ATTEMPT_COOLDOWN_MS) {
+					shouldSubmit = false;
+					isRacing = false;
+					if (DebugLog.enabled()) DebugLog.chat("§c[Debug] 등록 차단: 10초 쿨타임 걸림 (" + (System.currentTimeMillis() - lastSubmitAttemptMs) + "ms 경과)");
+				}
+
+				String currentBodyName = BodyCaptureManager.getCachedKartBodyNameOrUnknown();
+
+				if (!isRacing) {
+					shouldSubmit = false;
+					if (DebugLog.enabled()) DebugLog.chat("§c[Debug] 등록 차단: isRacing 플래그가 false 입니다. (관전 중이거나 오류)");
+				} else if (currentBodyName == null || currentBodyName.equals("UNKNOWN") || currentBodyName.isBlank()) {
+					shouldSubmit = false;
+					isRacing = false; // 정보 누락 시 플래그 즉시 회수
+					if (DebugLog.enabled()) DebugLog.chat("§c[Debug] 등록 차단: 카트바디 정보 누락 (" + currentBodyName + ")");
+				} else {
+					isRacing = false; // 정상 상태일 때 플래그 회수
+					if (DebugLog.enabled()) DebugLog.chat("§a[Debug] 기본 레이싱/카트 검증 통과 (isRacing 플래그 안전 회수)");
+				}
+
+				if (!soloOk && shouldSubmit) {
 					boolean ghostOk = false;
 					try { ghostOk = ModGatekeeper.isGhostTimeAttackEnvironment(); } catch (Throwable ignored) {}
 
 					if (!ghostOk) {
+						if (DebugLog.enabled()) DebugLog.chat("§c[Debug] 등록 차단: 혼자 주행하지 않았으며 고스트 타임어택도 아님.");
 						long now = System.currentTimeMillis();
 						boolean sameTimeAsLast = (lastSoloFailTimeStr != null && lastSoloFailTimeStr.equals(s));
 						boolean inCooldown = (now - lastSoloFailMsgMs) < SOLO_FAIL_COOLDOWN_MS;
 
 						if (!sameTimeAsLast && !inCooldown) {
-							if (ModConfig.get().autoSubmitEnabled) {
-								//client.player.sendMessage(Text.literal("§c[MCRiderRanking] 혼자 주행하거나 타임어택 모드(고스트/노드랲/노견인) 환경이어야 기록이 등록됩니다."), false);
-							}
 							lastSoloFailTimeStr = s;
 							lastSoloFailMsgMs = now;
 						}
 						shouldSubmit = false;
-						if (DebugLog.enabled()) {
-							DebugLog.chat("§c[Submit] 차단: 혼자가 아니고 고스트 타임어택 환경도 아님");
-						}
-					} else if (DebugLog.enabled()) {
-						DebugLog.chat("§a[Submit] 통과: 고스트 타임어택 환경 확인됨");
+					} else {
+						if (DebugLog.enabled()) DebugLog.chat("§a[Debug] 고스트 타임어택 환경 확인됨.");
 					}
 				}
 
 				if (shouldSubmit && !ModConfig.get().autoSubmitEnabled) {
+					if (DebugLog.enabled()) DebugLog.chat("§c[Debug] 등록 차단: 설정에서 '자동 기록 등록'이 꺼져 있음.");
 					shouldSubmit = false;
-					if (DebugLog.enabled()) {
-						DebugLog.chat("§c[Submit] 차단: 자동 등록(autoSubmitEnabled)이 꺼져 있음");
-					}
-				}
-
-				// ★ 집단 타임어택 도배 방지: 한 번 등록을 시도하면 일정 시간 동안 재시도 금지
-				if (shouldSubmit) {
-					long nowAttempt = System.currentTimeMillis();
-					long remain = SUBMIT_ATTEMPT_COOLDOWN_MS - (nowAttempt - lastSubmitAttemptMs);
-					if (remain > 0) {
-						shouldSubmit = false;
-						if (DebugLog.enabled()) {
-							DebugLog.chat("§c[Submit] 차단: 제출 쿨다운 중 (남은시간 " + remain + "ms)");
-						}
-					} else {
-						lastSubmitAttemptMs = nowAttempt;
-					}
 				}
 
 				if (shouldSubmit) {
@@ -366,12 +396,16 @@ public class InGameHudMixin {
 					logTrack(ok ? ("§a[Track] 감지 성공: " + safeShow(cachedTrackName)) : "§c[Track] 감지 실패(list 부족/빈값)");
 
 					if (!ok) {
+						if (DebugLog.enabled()) DebugLog.chat("§e[Debug] 트랙 정보 없음! 대기열(pendingTrackRetry)로 전환.");
 						pendingTrackRetry = true;
 						trackRetryStartMs = System.currentTimeMillis();
 						trackRetryCount = 0;
 						pendingTimeStr = s;
 						pendingTimeMillis = AddRankingScreen.parseTimeToMillis(s);
 						shouldSubmit = false;
+						// ★ 트랙 감지 실패 시 1차 등록 방지
+						multiPlayerSubmitArmed = false;
+						AutoSubmitter.multiPlayerSubmitArmed = false;
 					}
 				}
 
@@ -379,45 +413,45 @@ public class InGameHudMixin {
 					String track = cachedTrackName.replace("\n", " ").replaceAll("\\s+", " ").trim();
 
 					if (track.toUpperCase().contains("RANDOM")) {
+						if (DebugLog.enabled()) DebugLog.chat("§c[Debug] 등록 차단: 랜덤 트랙 (" + track + ")");
 						if (random_text) {
-							client.player.sendMessage(Text.literal("§c[MCRiderRanking] 랜덤 트랙은 기록되지 않습니다."), false);
 							random_text = false;
 						}
 						shouldSubmit = false;
-						if (DebugLog.enabled()) {
-							DebugLog.chat("§c[Submit] 차단: 랜덤 트랙(" + safeShow(track) + ")");
-						}
 					} else if (track.isBlank()) {
+						if (DebugLog.enabled()) DebugLog.chat("§c[Debug] 등록 차단: 빈 트랙 이름");
 						client.player.sendMessage(Text.literal("§c[MCRiderRanking] 트랙 이름을 찾을 수 없어 기록되지 않습니다."), false);
 						shouldSubmit = false;
-						if (DebugLog.enabled()) {
-							DebugLog.chat("§c[Submit] 차단: 트랙 이름이 비어있음");
-						}
 					} else {
 						String engineName = (cachedEngineName == null) ? "UNKNOWN" : cachedEngineName;
+
+						// ★ 엔진이 UNKNOWN일 경우에도 최종 기록 등록 차단
+						if (engineName.equals("UNKNOWN") || engineName.isBlank()) {
+							if (DebugLog.enabled()) DebugLog.chat("§c[Debug] 등록 차단: 엔진 정보를 찾을 수 없습니다.");
+							shouldSubmit = false;
+						}
+
 						long timeMillis = AddRankingScreen.parseTimeToMillis(s);
 
-						if (timeMillis >= 0) {
+						if (timeMillis >= 0 && shouldSubmit) {
+							if (DebugLog.enabled()) DebugLog.chat("§a[Debug] 최종 스탯 검증(isValidKartStat) 전송 대기 중... (Track: " + track + ")");
 							String player = client.player.getGameProfile().getName();
-							String bodyName = BodyCaptureManager.getCachedKartBodyNameOrUnknown();
 							String modesCsv = "없음";
 							try { modesCsv = ModGatekeeper.getModesCsv(); } catch (Throwable ignored) {}
 
-							if (isValidKartStat(client, bodyName)) {
+							if (isValidKartStat(client, currentBodyName)) {
+								if (DebugLog.enabled()) DebugLog.chat("§a[Debug] 스탯 검증 완료! AutoSubmitter 로 전송!");
 								String kartSpecDebug = buildKartSpecString(client);
-								if (DebugLog.enabled()) {
-									DebugLog.chat("§a[Submit] 제출 시도: " + safeShow(track) + " " + s
-											+ " | engine=" + engineName + " | body=" + bodyName + " | tire=" + cachedTireName);
-								}
+								String lapsCsv = String.join(",", AutoSubmitter.lapTimes);
+
 								AutoSubmitter.submitAsync(
 										player, track, s, timeMillis,
-										0, engineName, bodyName, cachedTireName, modesCsv, kartSpecDebug
+										0, engineName, currentBodyName, cachedTireName, modesCsv, kartSpecDebug, lapsCsv
 								);
-							} else if (DebugLog.enabled()) {
-								DebugLog.chat("§c[Submit] 차단: isValidKartStat 실패 (카트 스탯 검증 거부)");
+								lastSubmitAttemptMs = System.currentTimeMillis();
+							} else {
+								if (DebugLog.enabled()) DebugLog.chat("§c[Debug] 등록 차단: 카트 스탯 검증(isValidKartStat) 실패");
 							}
-						} else if (DebugLog.enabled()) {
-							DebugLog.chat("§c[Submit] 차단: 시간 파싱 실패(" + s + ")");
 						}
 					}
 				}
@@ -553,9 +587,6 @@ public class InGameHudMixin {
 		MinecraftClient client = MinecraftClient.getInstance();
 		if (client.player == null || client.world == null) return "UNKNOWN";
 
-		// 1. 신식 감지 방법: 플레이어가 실제로 탑승 중인 차량(getVehicle 체인)에서 대구/안장 엔티티를 탐색
-		//    (반경 스캔 방식은 멀티플레이 환경에서 주변의 다른 플레이어 카트를 잘못 잡아내는 문제가 있어
-		//     실제 탑승 관계(루트 비히클 + 모든 승객 체인)를 기준으로 탐색하도록 변경)
 		net.minecraft.entity.LivingEntity closestTarget = null;
 
 		Entity rootVehicle = client.player.getRootVehicle();
@@ -566,7 +597,6 @@ public class InGameHudMixin {
 
 				String entityName = candidate.getName().getString().toLowerCase();
 
-				// 이름에 '안장'(saddle) 또는 '대구'(cod)가 포함되어 있는지 확인
 				if (entityName.contains("안장") || entityName.contains("saddle") ||
 						entityName.contains("대구") || entityName.contains("cod")) {
 					closestTarget = livingEntity;
@@ -575,7 +605,6 @@ public class InGameHudMixin {
 			}
 		}
 
-		// 가장 가까운 타겟을 찾았다면 ARMOR 어트리뷰트에서 data-tire 값을 검색
 		if (closestTarget != null) {
 			var inst = closestTarget.getAttributeInstance(
 					net.minecraft.entity.attribute.EntityAttributes.ARMOR
@@ -585,7 +614,6 @@ public class InGameHudMixin {
 					var id = mod.id();
 					if (id != null) {
 						String idStr = id.toString();
-						// data-tire 식별자 확인
 						if (idStr.contains("data-tire")) {
 							int value = (int) mod.value();
 							return mapTireValueToName(value);
@@ -595,14 +623,12 @@ public class InGameHudMixin {
 			}
 		}
 
-		// 2. 구버전 감지 방법: 플레이어 본인의 폭발 넉백 저항 속성 확인
 		var playerInst = client.player.getAttributeInstance(
 				net.minecraft.entity.attribute.EntityAttributes.EXPLOSION_KNOCKBACK_RESISTANCE
 		);
 		if (playerInst != null) {
 			for (var mod : playerInst.getModifiers()) {
 				var id = mod.id();
-				// 이전 버전 호환을 위해 minecraft:kart-tire 포함 여부 확인
 				if (id != null && id.toString().contains("kart-tire")) {
 					int value = (int) mod.value();
 					return mapTireValueToName(value);
@@ -613,11 +639,6 @@ public class InGameHudMixin {
 		return "UNKNOWN";
 	}
 
-	/**
-	 * 루트 비히클로부터 시작해 모든 승객(passenger) 체인을 BFS로 수집합니다.
-	 * 카트가 여러 엔티티가 중첩 탑승된 구조(예: 본체 위에 대구/안장이 추가로 탑승)인 경우에도
-	 * 전체 탑승 구조를 빠짐없이 탐색할 수 있도록 합니다.
-	 */
 	@Unique
 	private static List<Entity> collectVehicleChain(Entity root) {
 		List<Entity> chain = new ArrayList<>();
@@ -726,7 +747,6 @@ public class InGameHudMixin {
 			if (client.world != lastWorld) {
 				lastWorld = client.world;
 
-				// ★ 월드 입장 시 타이어 1차 캐싱 (월드가 바뀔 때마다 초기화)
 				fallbackTireName = findTireNameFromAttribute();
 
 				boolean hasBlack = false;
@@ -744,6 +764,7 @@ public class InGameHudMixin {
 			}
 
 			if (cachedSingleplayerGameSystem) {
+				// ★ 알림 복구됨
 				Text alertMsg = Text.literal("§a[MCRiderRanking] 자동 기록 활성화! (싱글플레이) - [")
 						.append(Text.keybind("key.rankinglog.open_ranking").formatted(net.minecraft.util.Formatting.YELLOW))
 						.append(Text.literal("§a]키를 눌러 랭킹을 확인할 수 있습니다"));
@@ -774,11 +795,9 @@ public class InGameHudMixin {
 
 		if (matchedServer == null) return false;
 
-		// 개발 서버인 경우 화이트리스트 추가 검증
 		if (matchedServer.isDevServer()) {
 			java.util.Set<String> wl = cachedDevWhitelist;
 			if (wl == null) {
-				// 화이트리스트 아직 로드 안됨 → 조용히 대기
 				return false;
 			}
 			String myName = MinecraftClient.getInstance() != null
@@ -791,6 +810,7 @@ public class InGameHudMixin {
 			}
 		}
 
+		// ★ 알림 복구됨
 		Text alertMsg = Text.literal("§a[MCRiderRanking] 자동 기록 활성화! - [")
 				.append(Text.keybind("key.rankinglog.open_ranking").formatted(net.minecraft.util.Formatting.YELLOW))
 				.append(Text.literal("§a]키를 눌러 랭킹을 확인할 수 있습니다"));
@@ -830,7 +850,6 @@ public class InGameHudMixin {
 						catch (NumberFormatException ignored) { continue; }
 						list.add(new AllowedServer(ip, port, isDev));
 					}
-					// 개발 서버 화이트리스트 파싱
 					if (res.has("whitelist") && !res.get("whitelist").isJsonNull()) {
 						String raw = res.get("whitelist").getAsString().replace(" ", "");
 						for (String name : raw.split(",")) {
@@ -886,12 +905,25 @@ public class InGameHudMixin {
 	@Unique
 	private List<DisplayEntity.TextDisplayEntity> getTextDisplaysSortedByY() {
 		MinecraftClient client = MinecraftClient.getInstance();
-		if (client.world == null) return List.of();
+		if (client.world == null || client.player == null) return List.of();
+
+		Vec3d p = client.player.getPos();
+		Box[] boxes = { LOBBY_BOX, ATTACK_BOX, DEV_ATTACK_BOX };
+		Box closestBox = boxes[0];
+		double minDst = closestBox.getCenter().squaredDistanceTo(p);
+
+		for (int i = 1; i < boxes.length; i++) {
+			double dst = boxes[i].getCenter().squaredDistanceTo(p);
+			if (dst < minDst) {
+				minDst = dst;
+				closestBox = boxes[i];
+			}
+		}
 
 		List<DisplayEntity.TextDisplayEntity> result = new ArrayList<>();
 		for (Entity e : client.world.getEntities()) {
 			if (e instanceof DisplayEntity.TextDisplayEntity td) {
-				if (LOBBY_BOX.contains(td.getPos())) result.add(td);
+				if (closestBox.contains(td.getPos())) result.add(td);
 			}
 		}
 

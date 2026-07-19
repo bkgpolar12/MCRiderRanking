@@ -73,20 +73,18 @@ public class AddRankingScreen extends Screen {
                             String modesCsv = "없음";
                             String tireName = "레이싱 타이어";
 
-                            // ★ UI 모달에서 수동으로 전송할 때는 스펙 검사 결과를 "수동등록"으로 처리합니다.
                             String kartSpecDebug = "없음";
+                            // UI 모달 수동 전송 시 랩타임 기록은 없음
+                            String lapsCsv = "";
 
                             var session = MinecraftClient.getInstance().getSession();
                             String uuid = String.valueOf(session.getUuidOrNull());
                             String token = session.getAccessToken();
 
                             String currentVersion = AutoSubmitter.getModVersion();
-
-                            // ★ UI 모달에서 수동 전송할 때도 현재 서버 주소를 획득하도록 추가
                             String serverAddress = CurrentServerHolder.get();
 
-                            // 파라미터 매칭: kartSpecDebug 문자열이 추가됨
-                            JsonObject submitRes = submitRecord(p, tr, t, newTimeMillis, engineName, bodyName, bodyColor, tireName, modesCsv, kartSpecDebug, uuid, token, currentVersion, serverAddress);
+                            JsonObject submitRes = submitRecord(p, tr, t, newTimeMillis, engineName, bodyName, bodyColor, tireName, modesCsv, kartSpecDebug, lapsCsv, uuid, token, currentVersion, serverAddress);
 
                             boolean ok = submitRes.has("ok") && submitRes.get("ok").getAsBoolean();
                             if (!ok) {
@@ -145,14 +143,12 @@ public class AddRankingScreen extends Screen {
         }
     }
 
-    // ★ kartSpecDebug 데이터 추가
     public static JsonObject submitRecord(String player, String track, String timeStr, long timeMillis,
                                           String engineName, String bodyName, String bodyColor, String tireName, String modesCsv,
-                                          String kartSpecDebug,
+                                          String kartSpecDebug, String lapsCsv,
                                           String uuid, String token, String version, String serverAddress) {
 
         JsonObject json = new JsonObject();
-        // ★ Deno 엣지 함수 라우팅을 위한 action 값 추가
         json.addProperty("action", "submit_record");
 
         json.addProperty("p_player", player);
@@ -167,15 +163,14 @@ public class AddRankingScreen extends Screen {
         json.addProperty("p_uuid", uuid);
         json.addProperty("p_token", token);
         json.addProperty("p_version", version);
-
-        // ★ Supabase에 보낼 kart_spec_debug 칼럼 파라미터 추가
         json.addProperty("p_kart_spec_debug", kartSpecDebug);
-
-        // ★ 전달받은 serverAddress를 JSON 바디에 추가 (null일 경우 방어 로직 추가)
         json.addProperty("p_server_address", serverAddress != null ? serverAddress : CurrentServerHolder.get());
 
+        // ★ Supabase에 보낼 랩타임 데이터
+        json.addProperty("p_laps", lapsCsv);
+
         try {
-            java.net.URI uri = java.net.URI.create("https://wmlcwmfabuziancpxdoq.supabase.co/functions/v1/very_secret_function_v3");
+            java.net.URI uri = java.net.URI.create("https://wmlcwmfabuziancpxdoq.supabase.co/functions/v1/very_secret_code_v4");
             java.net.HttpURLConnection con = (java.net.HttpURLConnection) uri.toURL().openConnection();
             con.setRequestMethod("POST");
             con.setRequestProperty("Content-Type", "application/json; charset=utf-8");
