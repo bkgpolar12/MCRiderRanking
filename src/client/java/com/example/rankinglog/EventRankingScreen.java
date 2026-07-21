@@ -7,9 +7,11 @@ import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.ConfirmScreen;
 import net.minecraft.client.gui.screen.Screen;
 import net.minecraft.client.gui.widget.ButtonWidget;
+import net.minecraft.client.render.RenderLayer;
 import net.minecraft.client.sound.PositionedSoundInstance;
 import net.minecraft.sound.SoundEvents;
 import net.minecraft.text.Text;
+import net.minecraft.util.Identifier;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -33,7 +35,7 @@ public class EventRankingScreen extends Screen {
     }
 
     private static final int OUTER_PAD = 12;
-    private static final int ROW_H = 18;
+    private static final int ROW_H = 26;
 
     private final Screen parent;
     private final EventOptionSelectScreen.EventEntry eventInfo;
@@ -663,28 +665,40 @@ public class EventRankingScreen extends Screen {
             context.getMatrices().push();
             context.getMatrices().scale(scale, scale, 1.0f);
 
-            int sY = (int)((currentY + (ROW_H - 10 * scale) / 2) / scale);
+            int cardCenterY = (int)(currentY / scale) + (int)(ROW_H / scale) / 2;
+            int sY = cardCenterY - 4;
             int sPx = (int)(pX / scale);
 
             int rankColor = (rank == 1) ? 0xFFFFE066 : (rank == 2) ? 0xFFE6E6E6 : (rank == 3) ? 0xFFFFB36B : 0xFFFFFF;
             context.drawTextWithShadow(textRenderer, rank + "위", (int)(rX / scale), sY, rankColor);
 
-            String rt = r.repTitle() != null && !r.repTitle().isEmpty() ? " [" + r.repTitle() + "]" : "";
+            int headSize = 16;
+            int headX = sPx;
+            int headY = cardCenterY - 8;
+
+            Identifier headTex = RankingScreen.SkinLoader.getSkin(r.player(), headSize);
+            if (headTex != null) {
+                context.drawTexture(RenderLayer::getGuiTextured, headTex, headX, headY, 0.0F, 0.0F, headSize, headSize, headSize, headSize);
+            } else {
+                context.fill(headX, headY, headX + headSize, headY + headSize, 0xFF555555);
+            }
+
+            int textStartX = headX + headSize + 4;
+            String repText = "";
+            if (r.repTitle() != null && !r.repTitle().isEmpty()) { repText = "[" + r.repTitle() + "]"; }
 
             int nextColX = showTime ? tmX : (showBody ? bX : (showEngine ? eX : tableX + tableW));
-            int maxPlayerW = Math.max(0, (int)((nextColX - pX - 5) / scale));
+            int maxPlayerW = Math.max(0, (int)((nextColX - pX - 25) / scale));
 
-            if (rt.isEmpty()) {
-                context.drawTextWithShadow(textRenderer, trimWithEllipsis(r.player(), maxPlayerW), sPx, sY, 0xFFFFFF);
+            if (repText.isEmpty()) {
+                context.drawTextWithShadow(textRenderer, trimWithEllipsis(r.player(), maxPlayerW), textStartX, sY, 0xFFFFFF);
             } else {
-                int maxNameW = Math.max(0, maxPlayerW - textRenderer.getWidth(rt));
-                if (maxNameW <= 0) {
-                    context.drawTextWithShadow(textRenderer, trimWithEllipsis(r.player() + rt, maxPlayerW), sPx, sY, 0xFFFFFF);
-                } else {
-                    String trimmedName = trimWithEllipsis(r.player(), maxNameW);
-                    context.drawTextWithShadow(textRenderer, trimmedName, sPx, sY, 0xFFFFFF);
-                    context.drawTextWithShadow(textRenderer, rt, sPx + textRenderer.getWidth(trimmedName), sY, parseHex(r.repColor(), 0x55FFFF));
-                }
+                context.drawTextWithShadow(textRenderer, trimWithEllipsis(r.player(), maxPlayerW), textStartX, headY + 1, 0xFFFFFF);
+                context.getMatrices().push();
+                context.getMatrices().translate(headX + headSize + 4, headY + 10, 0);
+                context.getMatrices().scale(0.75f, 0.75f, 1.0f);
+                context.drawTextWithShadow(textRenderer, repText, 0, 0, parseHex(r.repColor(), 0x55FFFF));
+                context.getMatrices().pop();
             }
 
             boolean hiddenSomething = false;

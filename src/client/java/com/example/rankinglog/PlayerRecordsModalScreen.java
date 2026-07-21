@@ -350,7 +350,7 @@ public class PlayerRecordsModalScreen extends Screen {
 
         for (int i = start; i < end; i++) {
             RankingScreen.Entry e = groupedEntry.entries.get(i);
-            int rank = groupedEntry.startRank + i; // 컴파일 안전성을 위한 임시 등수 처리
+            int rank = groupedEntry.entryRanks.get(i); // 실제 전체 랭킹 순위
             boolean isExpanded = (e == selectedDetailEntry);
 
             int itemH = ROW_H;

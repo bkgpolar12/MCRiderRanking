@@ -4,7 +4,9 @@ import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.Screen;
 import net.minecraft.client.gui.widget.ButtonWidget;
 import net.minecraft.client.gui.widget.TextFieldWidget;
+import net.minecraft.client.render.RenderLayer;
 import net.minecraft.text.Text;
+import net.minecraft.util.Identifier;
 import java.util.*;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonArray;
@@ -16,11 +18,17 @@ public class RiderFindScreen extends Screen {
     // 전체 서버 검색 전용 — ApiCache와 별개로 관리
     private final List<String> allPlayersGlobal = new ArrayList<>();
     private final Map<String, String> playerRepMapGlobal = new HashMap<>();
+    private final Map<String, String> playerRepColorMapGlobal = new HashMap<>();
     private boolean globalLoaded = false;
 
     private final List<String> allPlayers = new ArrayList<>();
     private final List<String> filtered = new ArrayList<>();
     private final Map<String, String> playerRepMap = new HashMap<>();
+    private final Map<String, String> playerRepColorMap = new HashMap<>();
+
+    // ★ 자기소개 글 캐시 (카드 우측에 표시)
+    private final Map<String, String> profileDescMap = new HashMap<>();
+    private final Set<String> profileDescLoading = new HashSet<>();
 
     // ★ 스크롤 관련 변수
     private int tableScroll = 0;
@@ -30,6 +38,7 @@ public class RiderFindScreen extends Screen {
     private String error = null;
     private ButtonWidget backBtn, refreshBtn;
     private static final int OUTER_PAD = 12;
+    private static final int ROW_H = 26;
 
     private SharedSidebar sharedSidebar;
 
@@ -103,16 +112,65 @@ public class RiderFindScreen extends Screen {
     }
 
     private void playUiClick() { if (this.client != null && this.client.getSoundManager() != null) this.client.getSoundManager().play(net.minecraft.client.sound.PositionedSoundInstance.master(net.minecraft.sound.SoundEvents.UI_BUTTON_CLICK, 1.0F)); }
-    private void computeRowsPerPage() { rowsPerPage = Math.min(14, Math.max(1, Math.max(1, this.height - 46 - 80 - 18 - 18) / 18)); }
+    private void computeRowsPerPage() { int tableY = 80; int tableH = this.height - 46 - tableY; rowsPerPage = Math.max(1, (tableH - 24) / ROW_H); }
+
+    private int parseHex(String hex, int fallback) {
+        if (hex == null || hex.isEmpty()) return fallback;
+        try {
+            if (hex.startsWith("#")) hex = hex.substring(1);
+            return 0xFF000000 | Integer.parseInt(hex, 16);
+        } catch (Exception e) { return fallback; }
+    }
+
+    private String trimWithEllipsis(String text, int maxWidth) {
+        if (maxWidth <= 0) return "";
+        if (textRenderer.getWidth(text) <= maxWidth) return text;
+        int ellipsisWidth = textRenderer.getWidth("...");
+        if (maxWidth <= ellipsisWidth) return "";
+        return textRenderer.trimToWidth(Text.literal(text), maxWidth - ellipsisWidth).getString() + "...";
+    }
+
+    /** 카드 우측에 표시할 자기소개 글을 캐시에서 가져오거나, 없으면 비동기로 가져온다 */
+    private String getOrFetchProfileDesc(String playerName) {
+        String cached = profileDescMap.get(playerName);
+        if (cached != null) return cached;
+        if (profileDescLoading.contains(playerName)) return "불러오는 중...";
+        profileDescLoading.add(playerName);
+        new Thread(() -> {
+            String result;
+            try {
+                JsonObject req = new JsonObject();
+                req.addProperty("p_player", playerName);
+                JsonObject obj = RankingScreen.Net.postJson(RankingScreen.SUPABASE_RPC_URL + "get_profile", req.toString());
+                if (obj.has("ok") && obj.get("ok").getAsBoolean() && obj.has("description")) {
+                    String desc = obj.get("description").getAsString();
+                    result = desc.trim().isEmpty() ? "작성된 소개글이 없습니다." : desc.trim();
+                } else {
+                    result = "작성된 소개글이 없습니다.";
+                }
+            } catch (Exception ex) {
+                result = "정보를 불러오지 못했습니다.";
+            }
+            final String fr = result;
+            if (this.client != null) this.client.execute(() -> { profileDescMap.put(playerName, fr); profileDescLoading.remove(playerName); });
+        }, "RiderFind-ProfileDesc-" + playerName).start();
+        return "불러오는 중...";
+    }
 
     private void rebuildPlayerList() {
-        allPlayers.clear(); playerRepMap.clear();
+        allPlayers.clear(); playerRepMap.clear(); playerRepColorMap.clear();
         RankingScreen.ApiCache.AllPayload all = RankingScreen.ApiCache.getAllIfReady(); if (all == null) return;
         LinkedHashSet<String> uniq = new LinkedHashSet<>();
         for (var it : all.rankingsByTrack.entrySet()) {
             for (RankingScreen.Entry e : it.getValue().ranking) {
                 String name = (e.player() == null) ? "" : e.player().trim();
-                if (!name.isBlank()) { uniq.add(name); if (e.repTitle() != null && !e.repTitle().isEmpty()) playerRepMap.put(name, e.repTitle()); }
+                if (!name.isBlank()) {
+                    uniq.add(name);
+                    if (e.repTitle() != null && !e.repTitle().isEmpty()) {
+                        playerRepMap.put(name, e.repTitle());
+                        if (e.repColor() != null && !e.repColor().isEmpty()) playerRepColorMap.put(name, e.repColor());
+                    }
+                }
             }
         }
         allPlayers.addAll(uniq); allPlayers.sort(String.CASE_INSENSITIVE_ORDER);
@@ -131,6 +189,7 @@ public class RiderFindScreen extends Screen {
                 if (res.has("ok") && res.get("ok").getAsBoolean()) {
                     java.util.LinkedHashSet<String> uniq = new java.util.LinkedHashSet<>();
                     java.util.Map<String, String> repMap = new java.util.HashMap<>();
+                    java.util.Map<String, String> repColorMap = new java.util.HashMap<>();
                     com.google.gson.JsonObject rankings = res.has("rankings")
                             ? res.getAsJsonObject("rankings") : new com.google.gson.JsonObject();
                     for (String track : rankings.keySet()) {
@@ -145,7 +204,13 @@ public class RiderFindScreen extends Screen {
                             uniq.add(name);
                             if (entry.has("repTitle") && !entry.get("repTitle").isJsonNull()) {
                                 String rep = entry.get("repTitle").getAsString();
-                                if (!rep.isEmpty()) repMap.put(name, rep);
+                                if (!rep.isEmpty()) {
+                                    repMap.put(name, rep);
+                                    if (entry.has("repColor") && !entry.get("repColor").isJsonNull()) {
+                                        String col = entry.get("repColor").getAsString();
+                                        if (!col.isEmpty()) repColorMap.put(name, col);
+                                    }
+                                }
                             }
                         }
                     }
@@ -154,10 +219,12 @@ public class RiderFindScreen extends Screen {
                     if (this.client != null) this.client.execute(() -> {
                         allPlayersGlobal.clear(); allPlayersGlobal.addAll(sorted);
                         playerRepMapGlobal.clear(); playerRepMapGlobal.putAll(repMap);
+                        playerRepColorMapGlobal.clear(); playerRepColorMapGlobal.putAll(repColorMap);
                         globalLoaded = true;
                         // allPlayers를 글로벌 목록으로 교체 후 필터 재적용
                         allPlayers.clear(); allPlayers.addAll(allPlayersGlobal);
                         playerRepMap.clear(); playerRepMap.putAll(playerRepMapGlobal);
+                        playerRepColorMap.clear(); playerRepColorMap.putAll(playerRepColorMapGlobal);
                         tableScroll = 0; applyFilter();
                     });
                 }
@@ -221,15 +288,13 @@ public class RiderFindScreen extends Screen {
             int tableX = rightAreaX + 8; int tableY = 80; int tableW = rightAreaW - 16; int tableH = this.height - 46 - tableY;
 
             if (mouseX >= tableX && mouseX <= tableX + tableW && mouseY >= tableY && mouseY <= tableY + tableH) {
-                int start = tableScroll; int end = Math.min(start + rowsPerPage, filtered.size()); int y = tableY + 24; int rowH = 18;
+                int start = tableScroll; int end = Math.min(start + rowsPerPage, filtered.size()); int y = tableY + 24;
                 for (int i = start; i < end; i++) {
-                    String name = filtered.get(i); String repTitle = playerRepMap.getOrDefault(name, ""); String displayName = name;
-                    if (!repTitle.isEmpty()) displayName += " §b[" + repTitle + "]§r";
-                    int nameX = tableX + 16; int nameY = y; int nameW = this.textRenderer.getWidth(displayName);
-                    if (mouseX >= nameX && mouseX <= nameX + nameW && mouseY >= nameY - 2 && mouseY <= nameY + 10) {
+                    String name = filtered.get(i);
+                    if (mouseX >= tableX + 1 && mouseX <= tableX + tableW - 1 && mouseY >= y - 2 && mouseY <= y + ROW_H - 2) {
                         if (this.client != null) this.client.setScreen(new PlayerProfileScreen(name, this)); return true;
                     }
-                    y += rowH;
+                    y += ROW_H;
                 }
             }
         }
@@ -259,15 +324,62 @@ public class RiderFindScreen extends Screen {
         if (loading) { context.drawCenteredTextWithShadow(textRenderer, "불러오는 중...", cx, tableY + 26, 0xFFFFFF); super.render(context, mouseX, mouseY, delta); return; }
         if (error != null) { String displayError = error.toLowerCase().contains("http") ? "이 버전은 서비스 종료 되었습니다. 최신 버전을 이용해 주세요." : error; context.drawCenteredTextWithShadow(this.textRenderer, "오류: " + displayError, cx, tableY + 26, 0xFF5555); super.render(context, mouseX, mouseY, delta); return; }
 
+        boolean showDesc = tableW > 260;
+        int descColX = tableX + Math.max(160, (int) (tableW * 0.45));
+
         context.drawTextWithShadow(textRenderer, "닉네임 (클릭하면 프로필)", tableX + 16, tableY + 8, 0xDDDDDD);
-        int start = tableScroll; int end = Math.min(start + rowsPerPage, filtered.size()); int y = tableY + 24; int rowH = 18;
+        if (showDesc) context.drawTextWithShadow(textRenderer, "소개", descColX, tableY + 8, 0xDDDDDD);
+
+        int start = tableScroll; int end = Math.min(start + rowsPerPage, filtered.size());
+        int currentY = tableY + 24;
+
+        context.enableScissor(tableX, tableY + 24, tableX + tableW, tableY + tableH);
 
         for (int i = start; i < end; i++) {
-            String name = filtered.get(i); String repTitle = playerRepMap.getOrDefault(name, ""); String displayName = name;
-            if (!repTitle.isEmpty()) displayName += " §b[" + repTitle + "]§r";
-            boolean hover = mouseX >= tableX + 16 && mouseX <= tableX + 16 + textRenderer.getWidth(displayName) && mouseY >= y - 2 && mouseY <= y + 10;
-            context.drawTextWithShadow(textRenderer, displayName, tableX + 16, y, hover ? 0xFFFFEE88 : 0xFFFFFF); y += rowH;
+            String name = filtered.get(i);
+            String repTitle = playerRepMap.getOrDefault(name, "");
+            String repColor = playerRepColorMap.getOrDefault(name, "#55FFFF");
+
+            boolean hover = mouseX >= tableX + 1 && mouseX <= tableX + tableW - 1 && mouseY >= currentY - 2 && mouseY <= currentY + ROW_H - 2;
+            int bgColor = hover ? 0x33FFFFFF : (((i - start) & 1) == 0 ? 0x00000000 : 0x22000000);
+            context.fill(tableX + 1, currentY - 2, tableX + tableW - 1, currentY + ROW_H - 2, bgColor);
+
+            int cardCenterY = currentY + ROW_H / 2;
+            int headSize = 16;
+            int headX = tableX + 16;
+            int headY = cardCenterY - 8;
+
+            Identifier headTex = RankingScreen.SkinLoader.getSkin(name, headSize);
+            if (headTex != null) {
+                context.drawTexture(RenderLayer::getGuiTextured, headTex, headX, headY, 0.0F, 0.0F, headSize, headSize, headSize, headSize);
+            } else {
+                context.fill(headX, headY, headX + headSize, headY + headSize, 0xFF555555);
+            }
+
+            int textStartX = headX + headSize + 4;
+            int maxNameW = Math.max(0, (showDesc ? descColX - 10 : tableX + tableW - 20) - textStartX);
+
+            if (repTitle.isEmpty()) {
+                context.drawTextWithShadow(textRenderer, trimWithEllipsis(name, maxNameW), textStartX, cardCenterY - 4, 0xFFFFFF);
+            } else {
+                context.drawTextWithShadow(textRenderer, trimWithEllipsis(name, maxNameW), textStartX, headY + 1, 0xFFFFFF);
+                context.getMatrices().push();
+                context.getMatrices().translate(textStartX, headY + 10, 0);
+                context.getMatrices().scale(0.75f, 0.75f, 1.0f);
+                context.drawTextWithShadow(textRenderer, "[" + repTitle + "]", 0, 0, parseHex(repColor, 0x55FFFF));
+                context.getMatrices().pop();
+            }
+
+            if (showDesc) {
+                String desc = getOrFetchProfileDesc(name);
+                int maxDescW = Math.max(0, tableX + tableW - descColX - 12);
+                context.drawTextWithShadow(textRenderer, trimWithEllipsis("§7" + desc, maxDescW), descColX, cardCenterY - 4, 0xAAAAAA);
+            }
+
+            currentY += ROW_H;
         }
+
+        context.disableScissor();
 
         // 스크롤바 렌더링
         int maxScroll = Math.max(0, filtered.size() - rowsPerPage);

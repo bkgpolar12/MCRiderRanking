@@ -1052,7 +1052,7 @@ public class RankingScreen extends Screen {
             } else {
                 context.drawTextWithShadow(this.textRenderer, trimWithEllipsis(topEntry.player(), maxPlayerW), textStartX, headY + 1, 0xFFFFFF);
                 context.getMatrices().push();
-                context.getMatrices().translate(headX + 14, headY + 10, 0);
+                context.getMatrices().translate(headX + headSize + 4, headY + 10, 0);
                 context.getMatrices().scale(0.75f, 0.75f, 1.0f);
                 context.drawTextWithShadow(this.textRenderer, repText, 0, 0, parseHex(topEntry.repColor(), 0x55FFFF));
                 context.getMatrices().pop();

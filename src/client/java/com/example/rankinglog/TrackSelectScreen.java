@@ -10,6 +10,8 @@ import net.minecraft.client.gui.widget.TextFieldWidget;
 import net.minecraft.text.Text;
 import net.minecraft.client.sound.PositionedSoundInstance;
 import net.minecraft.sound.SoundEvents;
+import net.minecraft.client.render.RenderLayer;
+import net.minecraft.util.Identifier;
 
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -37,7 +39,7 @@ public class TrackSelectScreen extends Screen {
     private final Map<String, String> myBestTimes = new HashMap<>();
 
     // ★ 챔피언 정보 매핑
-    private record ChampionInfo(String name, String timeStr) {}
+    private record ChampionInfo(String name, String timeStr, String repTitle, String repColor) {}
     private final Map<String, ChampionInfo> trackChampions = new HashMap<>();
 
     // 스크롤 상태 변수
@@ -202,7 +204,7 @@ public class TrackSelectScreen extends Screen {
                     int trackListX = 12 + themeListW + 8;
                     int trackListW = this.width - 12 - trackListX;
                     int padding = 6;
-                    int cardH = 64;
+                    int cardH = 86;
                     int listTop = 10 + 58;
                     int listH = Math.max(80, this.height - 46 - listTop);
 
@@ -226,7 +228,7 @@ public class TrackSelectScreen extends Screen {
 
                     if (entry.getValue().ranking != null && !entry.getValue().ranking.isEmpty()) {
                         RankingScreen.Entry first = entry.getValue().ranking.get(0);
-                        champ = new ChampionInfo(first.player(), first.timeStr());
+                        champ = new ChampionInfo(first.player(), first.timeStr(), first.repTitle(), first.repColor());
 
                         for (RankingScreen.Entry e : entry.getValue().ranking) {
                             if (e.player() != null && e.player().equalsIgnoreCase(myName)) {
@@ -245,6 +247,16 @@ public class TrackSelectScreen extends Screen {
             }
 
             applySearch();
+        }
+    }
+
+    private int parseHex(String hex, int fallback) {
+        if (hex == null || hex.isEmpty()) return fallback;
+        try {
+            String h = hex.startsWith("#") ? hex.substring(1) : hex;
+            return 0xFF000000 | Integer.parseInt(h, 16);
+        } catch (Exception e) {
+            return fallback;
         }
     }
 
@@ -398,7 +410,7 @@ public class TrackSelectScreen extends Screen {
         }
 
         int padding = 6;
-        int cardH = 64;
+        int cardH = 86;
         int cols = Math.max(1, (trackListW - padding * 2 - 10) / 140);
         int cardW = (trackListW - padding * 2 - (cols - 1) * padding - 10) / cols;
 
@@ -434,20 +446,51 @@ public class TrackSelectScreen extends Screen {
                 int trackColor = isCur ? 0xFF55FF55 : (hover ? HOVER_YELLOW : 0xFFFFFFFF);
                 drawScrollingText(context, te.track(), cX + 5, cY + 5, maxTextW, trackColor, 1.1f);
 
-                // ★ 2. 챔피언 정보 표시 (골드 색상)
-                int lineY = cY + 22;
+                // ★ 2. 챔피언 정보 표시 (플레이어 헤드 + 이름 + 칭호)
+                int champBlockY = cY + 20;
+                int headSize = 18;
+                int headX = cX + 5;
+                int headY = champBlockY;
+                int nameTextX = headX + headSize + 5;
+                int nameMaxW = Math.max(0, cardW - (headSize + 5) - 10);
+
                 if (champ != null) {
-                    String champLine = "👑 §6" + champ.name() + " §f(" + champ.timeStr() + ")";
-                    drawScrollingText(context, champLine, cX + 5, lineY, maxTextW, 0xFFFFFF, 1.0f);
+                    Identifier headTex = RankingScreen.SkinLoader.getSkin(champ.name(), headSize);
+                    if (headTex != null) {
+                        context.drawTexture(RenderLayer::getGuiTextured, headTex, headX, headY, 0.0F, 0.0F, headSize, headSize, headSize, headSize);
+                    } else {
+                        context.fill(headX, headY, headX + headSize, headY + headSize, 0xFF555555);
+                    }
+                    drawRectBorder(context, headX, headY, headSize, headSize, 0xFFFFD700);
+
+                    String champTitle = (champ.repTitle() != null && !champ.repTitle().isEmpty()) ? "[" + champ.repTitle() + "]" : null;
+
+                    if (champTitle == null) {
+                        // 칭호가 없으면 이름을 아이콘 세로 중앙에 맞춰 한 줄로 표시
+                        drawScrollingText(context, "§6" + champ.name(), nameTextX, headY + 4, nameMaxW, 0xFFFFFF, 1.0f);
+                    } else {
+                        drawScrollingText(context, "§6" + champ.name(), nameTextX, headY, nameMaxW, 0xFFFFFF, 1.0f);
+                        drawScrollingText(context, champTitle, nameTextX, headY + 10, nameMaxW, parseHex(champ.repColor(), 0x55FFFF), 0.75f);
+                    }
                 } else {
-                    drawScrollingText(context, "👑 챔피언 없음", cX + 5, lineY, maxTextW, 0xAAAAAA, 1.0f);
+                    context.fill(headX, headY, headX + headSize, headY + headSize, 0xFF3A3A3A);
+                    drawRectBorder(context, headX, headY, headSize, headSize, 0xFF555555);
+                    drawScrollingText(context, "챔피언 없음", nameTextX, headY + 4, nameMaxW, 0xAAAAAA, 1.0f);
                 }
 
-                // ★ 3. 일반 정보 (나의 베스트)
+                // ★ 3. 챔피언 기록 시간
+                int lineY = champBlockY + headSize + 3;
+                if (champ != null) {
+                    drawScrollingText(context, "🏆 §f" + champ.timeStr(), cX + 5, lineY, maxTextW, 0xFFFFFF, 1.0f);
+                } else {
+                    drawScrollingText(context, "🏆 -", cX + 5, lineY, maxTextW, 0x777777, 1.0f);
+                }
+
+                // ★ 4. 일반 정보 (나의 베스트)
                 lineY += 14;
                 drawScrollingText(context, "나의 베스트: §e" + bestTime, cX + 5, lineY, maxTextW, 0xAAAAAA, 1.0f);
 
-                // ★ 4. 일반 정보 (기록 수)
+                // ★ 5. 일반 정보 (기록 수)
                 lineY += 12;
                 drawScrollingText(context, "기록 수: " + te.count() + "개", cX + 5, lineY, maxTextW, 0xAAAAAA, 1.0f);
             }
@@ -488,7 +531,7 @@ public class TrackSelectScreen extends Screen {
         int trackListW = this.width - OUTER_PAD - trackListX;
         if (mouseX >= trackListX && mouseX <= trackListX + trackListW && mouseY >= listTop && mouseY <= listTop + listH) {
             int padding = 6;
-            int cardH = 64;
+            int cardH = 86;
             int cols = Math.max(1, (trackListW - padding * 2 - 10) / 140);
             int visibleRows = (listH - padding * 2) / (cardH + padding);
             int totalRows = (filtered.size() + cols - 1) / cols;
@@ -529,7 +572,7 @@ public class TrackSelectScreen extends Screen {
         int trackListX = themeListX + themeListW + 8;
         int trackListW = this.width - OUTER_PAD - trackListX;
         int padding = 6;
-        int cardH = 64;
+        int cardH = 86;
         int cols = Math.max(1, (trackListW - padding * 2 - 10) / 140);
         int cardW = (trackListW - padding * 2 - (cols - 1) * padding - 10) / cols;
         int visibleRows = (listH - padding * 2) / (cardH + padding);

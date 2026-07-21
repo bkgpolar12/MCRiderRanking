@@ -7,8 +7,10 @@ import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.Screen;
 import net.minecraft.client.gui.widget.ButtonWidget;
 import net.minecraft.client.gui.widget.TextFieldWidget;
+import net.minecraft.client.render.RenderLayer;
 import net.minecraft.text.OrderedText;
 import net.minecraft.text.Text;
+import net.minecraft.util.Identifier;
 
 import java.text.SimpleDateFormat;
 import java.util.*;
@@ -692,7 +694,15 @@ public class PlayerProfileScreen extends Screen {
         int leftBoxW = splitX - headerX;
         int leftBoxCenterX = headerX + leftBoxW / 2;
 
-        context.getMatrices().push(); context.getMatrices().scale(2.0f, 2.0f, 1.0f); context.drawCenteredTextWithShadow(this.textRenderer, "👤", (int)(leftBoxCenterX / 2.0f), (int)((headerY + 15) / 2.0f), 0xFFFFFF); context.getMatrices().pop();
+        int headSize = 32;
+        int headX = leftBoxCenterX - headSize / 2;
+        int headY = headerY + 8;
+        Identifier headTex = RankingScreen.SkinLoader.getSkin(playerName, headSize);
+        if (headTex != null) {
+            context.drawTexture(RenderLayer::getGuiTextured, headTex, headX, headY, 0.0F, 0.0F, headSize, headSize, headSize, headSize);
+        } else {
+            context.fill(headX, headY, headX + headSize, headY + headSize, 0xFF555555);
+        }
 
         int nameW = this.textRenderer.getWidth(playerName);
         int repW = repAchieveSimple.isEmpty() ? 0 : this.textRenderer.getWidth(" [" + repAchieveSimple + "]");

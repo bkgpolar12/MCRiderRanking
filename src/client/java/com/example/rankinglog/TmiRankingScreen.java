@@ -7,9 +7,11 @@ import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.Screen;
 import net.minecraft.client.gui.widget.ButtonWidget;
 import net.minecraft.client.gui.widget.TextFieldWidget;
+import net.minecraft.client.render.RenderLayer;
 import net.minecraft.client.sound.PositionedSoundInstance;
 import net.minecraft.sound.SoundEvents;
 import net.minecraft.text.Text;
+import net.minecraft.util.Identifier;
 
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
@@ -318,6 +320,16 @@ public class TmiRankingScreen extends Screen {
     private int parseHex(String hex, int fallback) {
         if (hex == null || hex.isEmpty()) return fallback;
         try { if (hex.startsWith("#")) hex = hex.substring(1); return 0xFF000000 | Integer.parseInt(hex, 16); } catch (Exception e) { return fallback; }
+    }
+
+    // ★ 플레이어 스킨 헤드 텍스처 렌더링 공용 헬퍼
+    private void drawPlayerHead(DrawContext context, String playerName, int x, int y, int size) {
+        Identifier headTex = RankingScreen.SkinLoader.getSkin(playerName, size);
+        if (headTex != null) {
+            context.drawTexture(RenderLayer::getGuiTextured, headTex, x, y, 0.0F, 0.0F, size, size, size, size);
+        } else {
+            context.fill(x, y, x + size, y + size, 0xFF555555);
+        }
     }
 
     private String formatDateTimeFull(long ms) {
@@ -838,6 +850,8 @@ public class TmiRankingScreen extends Screen {
                 int legY = tableTop + 20;
                 context.drawTextWithShadow(textRenderer, "순위표 (Top 8 및 기타)", legX, legY, 0xFFFF55);
 
+                boolean showHeadPie = selectedCategory.isPlayer() || selectedCategory.isRecentLayout();
+
                 for (int j = 0; j < pieValues.size(); j++) {
                     boolean isOther = (j == pieLimit && totalSum > topSum);
                     String label = isOther ? "나머지 전체 (기타)" : (j + 1) + "위: " + filteredData.get(j).player();
@@ -846,7 +860,14 @@ public class TmiRankingScreen extends Screen {
 
                     int rowY = legY + 20 + j * 18;
                     context.fill(legX, rowY, legX + 10, rowY + 10, pieColors.get(j));
-                    context.drawTextWithShadow(textRenderer, String.format("%s | %s (%.1f%%)", label, valStr, pct), legX + 15, rowY + 1, 0xFFFFFF);
+
+                    int textX = legX + 15;
+                    if (showHeadPie && !isOther) {
+                        int headSize = 12;
+                        drawPlayerHead(context, filteredData.get(j).player(), textX, rowY - 1, headSize);
+                        textX += headSize + 4;
+                    }
+                    context.drawTextWithShadow(textRenderer, String.format("%s | %s (%.1f%%)", label, valStr, pct), textX, rowY + 1, 0xFFFFFF);
                 }
             }
             else if (isGraphView && cType == 1) {
@@ -871,11 +892,22 @@ public class TmiRankingScreen extends Screen {
 
                     context.drawTextWithShadow(this.textRenderer, rank + "위", rightAreaX + 15, textY, rankColor);
 
-                    String pName = "👤 " + e.player();
+                    boolean showHead = selectedCategory.isPlayer() || selectedCategory.isRecentLayout();
                     int nameX = rightAreaX + 55;
-                    context.drawTextWithShadow(this.textRenderer, pName, nameX, textY, 0xFFFFFF);
+                    int nameTextX = nameX;
 
-                    int nameEndX = nameX + this.textRenderer.getWidth(pName);
+                    if (showHead) {
+                        int headSize = 14;
+                        int headX = nameX;
+                        int headY = y + (ROW_H - headSize) / 2;
+                        drawPlayerHead(context, e.player(), headX, headY, headSize);
+                        nameTextX = headX + headSize + 4;
+                    }
+
+                    String pName = e.player();
+                    context.drawTextWithShadow(this.textRenderer, pName, nameTextX, textY, 0xFFFFFF);
+
+                    int nameEndX = nameTextX + this.textRenderer.getWidth(pName);
                     String valStr = selectedCategory.isRecentLayout() && !selectedCategory.id().equals("ARCHIVED") ? e.timeStr() : e.displayValue();
 
                     int valX = rightAreaX + 10 + barW + 5;
@@ -970,21 +1002,28 @@ public class TmiRankingScreen extends Screen {
                         if (!isArchived) context.drawTextWithShadow(this.textRenderer, (isIndepEvent ? "§l" : "") + e.rankStr(), (int)(colRankX / scale), sY, 0xFFFFFF);
 
                         int nextCol1 = showTrack ? colTrackX : (showTime ? colTimeX : (showBody ? colBodyX : (showEngine ? colEngineX : rightAreaX + rightAreaW)));
-                        int maxPlayerW = Math.max(0, (int)((nextCol1 - colPlayerX - 5) / scale));
+
+                        int headSize = 14;
+                        int localHeadX = (int)(colPlayerX / scale);
+                        int localHeadY = (int)((currentY + (ROW_H - headSize * scale) / 2) / scale);
+                        drawPlayerHead(context, e.player(), localHeadX, localHeadY, headSize);
+                        int nameTextX = localHeadX + headSize + 4;
+
+                        int maxPlayerW = Math.max(0, (int)((nextCol1 - colPlayerX) / scale) - headSize - 4 - 5);
 
                         String repText = ""; if (isExpanded && selectedRepTitle != null && !selectedRepTitle.isEmpty()) repText = " [" + selectedRepTitle + "]";
 
                         if (isExpanded && !repText.isEmpty()) {
                             int maxNameW = Math.max(0, maxPlayerW - textRenderer.getWidth(repText));
                             if (maxNameW <= 0) {
-                                context.drawTextWithShadow(textRenderer, trimWithEllipsis(e.player() + repText, maxPlayerW), (int)(colPlayerX / scale), sY, 0xFFFFFF);
+                                context.drawTextWithShadow(textRenderer, trimWithEllipsis((isIndepEvent ? "§l" : "") + e.player() + repText, maxPlayerW), nameTextX, sY, 0xFFFFFF);
                             } else {
-                                String trimmedName = trimWithEllipsis((isIndepEvent ? "§l" : "") + "👤 " + e.player(), maxNameW);
-                                context.drawTextWithShadow(textRenderer, trimmedName, (int)(colPlayerX / scale), sY, 0xFFFFFF);
-                                context.drawTextWithShadow(textRenderer, repText, (int)(colPlayerX / scale) + textRenderer.getWidth(trimmedName), sY, parseHex(selectedRepColor, 0x55FFFF));
+                                String trimmedName = trimWithEllipsis((isIndepEvent ? "§l" : "") + e.player(), maxNameW);
+                                context.drawTextWithShadow(textRenderer, trimmedName, nameTextX, sY, 0xFFFFFF);
+                                context.drawTextWithShadow(textRenderer, repText, nameTextX + textRenderer.getWidth(trimmedName), sY, parseHex(selectedRepColor, 0x55FFFF));
                             }
                         } else {
-                            context.drawTextWithShadow(this.textRenderer, trimWithEllipsis((isIndepEvent ? "§l" : "") + "👤 " + e.player(), maxPlayerW), (int)(colPlayerX / scale), sY, 0xFFFFFF);
+                            context.drawTextWithShadow(this.textRenderer, trimWithEllipsis((isIndepEvent ? "§l" : "") + e.player(), maxPlayerW), nameTextX, sY, 0xFFFFFF);
                         }
 
                         boolean hiddenSomething = false;
@@ -1073,7 +1112,14 @@ public class TmiRankingScreen extends Screen {
                             boolean hoverBtn = isInside(mouseX, mouseY, btnX, btnY, btnW, btnH);
                             context.fill(btnX, btnY, btnX + btnW, btnY + btnH, hoverBtn ? 0xFF444444 : 0xFF222222);
                             drawRectBorder(context, btnX, btnY, btnW, btnH, hoverBtn ? 0xFF888888 : 0xFF555555);
-                            context.drawCenteredTextWithShadow(textRenderer, "👤", btnX + btnW / 2, btnY + 6, 0xFFFFFF);
+
+                            int btnHeadSize = 14;
+                            String btnLabel = "프로필";
+                            int groupW = btnHeadSize + 4 + textRenderer.getWidth(btnLabel);
+                            int groupX = btnX + (btnW - groupW) / 2;
+                            int groupY = btnY + (btnH - btnHeadSize) / 2;
+                            drawPlayerHead(context, e.player(), groupX, groupY, btnHeadSize);
+                            context.drawTextWithShadow(textRenderer, btnLabel, groupX + btnHeadSize + 4, groupY + (btnHeadSize - 8) / 2, 0xFFFFFF);
                             // 툴팁
                             if (hoverBtn) renderTooltip(context, net.minecraft.text.Text.literal("프로필 보기"), mouseX, mouseY);
                         }
@@ -1118,8 +1164,16 @@ public class TmiRankingScreen extends Screen {
                         context.drawTextWithShadow(this.textRenderer, rank + "위", (int)(colRankX / scale), sY, rankColor);
 
                         int maxPlayerW = Math.max(0, (int)((colValueX - colPlayerX - 5) / scale));
-                        String pStr = (selectedCategory.isPlayer() ? "👤 " : "") + e.player();
-                        context.drawTextWithShadow(this.textRenderer, trimWithEllipsis(pStr, maxPlayerW), (int)(colPlayerX / scale), sY, 0xFFFFFF);
+                        int nameTextX = (int)(colPlayerX / scale);
+                        if (selectedCategory.isPlayer()) {
+                            int headSize = 14;
+                            int localHeadX = (int)(colPlayerX / scale);
+                            int localHeadY = (int)((y + (ROW_H - headSize * scale) / 2) / scale);
+                            drawPlayerHead(context, e.player(), localHeadX, localHeadY, headSize);
+                            nameTextX = localHeadX + headSize + 4;
+                            maxPlayerW = Math.max(0, maxPlayerW - headSize - 4);
+                        }
+                        context.drawTextWithShadow(this.textRenderer, trimWithEllipsis(e.player(), maxPlayerW), nameTextX, sY, 0xFFFFFF);
 
                         int maxValW = Math.max(0, (int)((rightAreaX + rightAreaW - colValueX - 5) / scale));
                         context.drawTextWithShadow(this.textRenderer, trimWithEllipsis(e.displayValue(), maxValW), (int)(colValueX / scale), sY, 0xFFFFFF);
