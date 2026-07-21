@@ -8,13 +8,20 @@ import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.Screen;
 import net.minecraft.client.gui.widget.ButtonWidget;
+import net.minecraft.client.render.RenderLayer;
 import net.minecraft.client.sound.PositionedSoundInstance;
+import net.minecraft.client.texture.NativeImage;
+import net.minecraft.client.texture.NativeImageBackedTexture;
 import net.minecraft.sound.SoundEvents;
 import net.minecraft.text.Text;
+import net.minecraft.util.Identifier;
 
+import java.io.IOException;
+import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
 import java.net.URI;
+import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.function.Consumer;
@@ -23,7 +30,6 @@ public class RankingScreen extends Screen {
 
     private String track;
     private final List<Entry> ranking = new ArrayList<>();
-    // ★ 그룹화된 렌더링용 리스트 추가
     private final List<GroupedEntry> groupedRanking = new ArrayList<>();
 
     private int tableScroll = 0;
@@ -63,7 +69,9 @@ public class RankingScreen extends Screen {
     private static final int BTN_W_TRACK = 110;
     private static final int BTN_GAP = 6;
     private static final int PANEL_PAD = 6;
-    private static final int ROW_H = 16;
+
+    private static final int ROW_H = 26;
+
     private static final int CHECK_SIZE = 12;
     private static final int ENGINE_PANEL_W = 150;
     private static final int TIRE_PANEL_W = 150;
@@ -80,18 +88,14 @@ public class RankingScreen extends Screen {
     private int modePanelX, modePanelY, modePanelW, modePanelH;
     private int tableX, tableTop, tableW, tableH;
 
-    // ★ 인라인 아코디언 및 스탯 정보 관련 변수
     private SharedSidebar sharedSidebar;
-    // ★ 선택 항목이 Entry가 아닌 GroupedEntry로 관리됩니다.
     private GroupedEntry selectedDetailEntry = null;
     private String selectedProfileDesc = "불러오는 중...";
     private ButtonWidget globeBtn;
 
-    // ★ 수동 버튼 렌더링 및 충돌 체크를 위한 좌표/크기 상태 변수들
     private boolean kartSpecExpanded = false;
     private int specBtnScreenX, specBtnScreenY, specBtnScreenW, specBtnScreenH;
 
-    // ★ 랩타임 버튼 렌더링 및 충돌 체크를 위한 좌표/크기 상태 변수들 추가
     private boolean lapsExpanded = false;
     private int lapsBtnScreenX, lapsBtnScreenY, lapsBtnScreenW, lapsBtnScreenH;
 
@@ -101,6 +105,74 @@ public class RankingScreen extends Screen {
     public static final String SUPABASE_URL = "https://wmlcwmfabuziancpxdoq.supabase.co/rest/v1/";
     public static final String SUPABASE_RPC_URL = SUPABASE_URL + "rpc/";
     public static final String SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndtbGN3bWZhYnV6aWFuY3B4ZG9xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU4ODEzMzQsImV4cCI6MjA5MTQ1NzMzNH0.0ZZJDv7qMRZzC7QdO2SYWApQ0ezSa-cx1M0aOawKe8M";
+
+    // ★ minotar.net 아바타 API를 이용한 스킨 로더
+    public static class SkinLoader {
+        private static final Map<String, Identifier> TEXTURE_CACHE = new HashMap<>();
+        private static final Map<String, Boolean> LOADING = new HashMap<>();
+        private static final Identifier DEFAULT_SKIN = Identifier.ofVanilla("textures/entity/player/wide/steve.png");
+
+        // headSize=16 렌더링과 호환되는 기본 오버로드 (기존 호출부 유지용)
+        public static Identifier getSkin(String playerName) {
+            return getSkin(playerName, 16);
+        }
+
+        public static Identifier getSkin(String playerName, int size) {
+            if (playerName == null || playerName.isBlank() || playerName.equals("Unknown")) {
+                return DEFAULT_SKIN;
+            }
+            String cleanName = playerName.toLowerCase();
+            String cacheKey = cleanName + "_" + size;
+
+            Identifier cached = TEXTURE_CACHE.get(cacheKey);
+            if (cached != null) {
+                return cached;
+            }
+
+            if (!LOADING.getOrDefault(cacheKey, false)) {
+                LOADING.put(cacheKey, true);
+                new Thread(() -> {
+                    try {
+                        // minotar.net 아바타 API에서 닉네임 기반으로 얼굴(스킨 앞면) 이미지를 바로 받아옵니다.
+                        URL url = new URL("https://minotar.net/avatar/" + playerName + "/" + size);
+                        HttpURLConnection con = (HttpURLConnection) url.openConnection();
+                        con.setRequestMethod("GET");
+                        con.setConnectTimeout(3000);
+                        con.setReadTimeout(3000);
+
+                        if (con.getResponseCode() == 200) {
+                            byte[] imageBytes;
+                            try (InputStream in = con.getInputStream()) {
+                                imageBytes = in.readAllBytes();
+                            }
+
+                            // 텍스처 업로드/등록은 반드시 렌더 스레드(메인 스레드)에서 수행
+                            MinecraftClient.getInstance().execute(() -> {
+                                try {
+                                    NativeImage image = NativeImage.read(imageBytes);
+                                    // 1.21.5부터 NativeImageBackedTexture는 (Supplier<String> nameSupplier, NativeImage image) 생성자만 제공
+                                    NativeImageBackedTexture texture = new NativeImageBackedTexture(() -> "minotar_" + cacheKey, image);
+                                    // registerDynamicTexture가 내부적으로 고유 Identifier를 생성/등록해서 반환
+                                    Identifier id = Identifier.of("rankinglog", "minotar_skin_" + cacheKey.replaceAll("[^a-z0-9_]", "_"));
+                                    MinecraftClient.getInstance().getTextureManager().registerTexture(id, texture);
+                                    TEXTURE_CACHE.put(cacheKey, id);
+                                } catch (IOException e) {
+                                    // 이미지 디코딩 실패 시 기본 스킨 유지
+                                } finally {
+                                    LOADING.put(cacheKey, false);
+                                }
+                            });
+                        } else {
+                            LOADING.put(cacheKey, false);
+                        }
+                    } catch (Exception e) {
+                        LOADING.put(cacheKey, false);
+                    }
+                }, "Minotar-Skin-Fetcher").start();
+            }
+            return DEFAULT_SKIN;
+        }
+    }
 
     public RankingScreen(String track) {
         super(Text.literal("랭킹"));
@@ -116,9 +188,7 @@ public class RankingScreen extends Screen {
     }
 
     private boolean isNewUi() {
-        try {
-            return !ModConfig.get().useLegacyUi;
-        } catch (Exception e) { return false; }
+        try { return !ModConfig.get().useLegacyUi; } catch (Exception e) { return false; }
     }
 
     private int getEffectiveSidebarWidth() {
@@ -163,11 +233,10 @@ public class RankingScreen extends Screen {
     private int getItemHeight(GroupedEntry grp, boolean isExpanded, int hiddenCount) {
         int h = ROW_H;
         if (isExpanded) {
-            int localExpandH = 16 * 3; // 설명 + 모드 + 등록일
+            int localExpandH = 16 * 3;
             Entry topEntry = grp.entries.get(0);
             boolean isSingle = "__singleplay__".equals(topEntry.serverAddress());
 
-            // 좁은 화면이라 숨겨진 컬럼(기록/카트/엔진)이 있으면 그만큼만 추가
             if (hiddenCount > 0) {
                 localExpandH += hiddenCount * 16 + 5;
             }
@@ -175,7 +244,6 @@ public class RankingScreen extends Screen {
             if (isSingle && kartSpecExpanded) {
                 String specRaw = topEntry.kartSpecDebug();
                 if (specRaw != null && !specRaw.isEmpty() && !specRaw.equals("없음")) {
-                    // ★ 실제 렌더는 2단 컬럼이므로, 줄 수의 절반만 높이로 반영
                     int lines = 1;
                     if (specRaw.contains("speed")) lines++;
                     if (specRaw.contains("accel") || specRaw.contains("boost:")) lines++;
@@ -183,7 +251,7 @@ public class RankingScreen extends Screen {
                     if (specRaw.contains("gauge") || specRaw.contains("boosttime") || specRaw.contains("maxboostcount")) lines++;
                     if (specRaw.contains("defense")) lines++;
                     if (specRaw.contains("draft")) lines++;
-                    localExpandH += 16 + ((lines + 1) / 2) * 16; // 헤더 1줄 + (2단 컬럼 기준 줄 수)
+                    localExpandH += 16 + ((lines + 1) / 2) * 16;
                 } else {
                     localExpandH += 16;
                 }
@@ -191,20 +259,15 @@ public class RankingScreen extends Screen {
             if (lapsExpanded) {
                 String lapRaw = topEntry.lapData();
                 if (lapRaw != null && !lapRaw.isEmpty() && !lapRaw.equals("없음")) {
-                    localExpandH += 16 + lapRaw.split(",").length * 16; // 헤더 1줄 + 바퀴별 1줄씩
+                    localExpandH += 16 + lapRaw.split(",").length * 16;
                 } else {
                     localExpandH += 16;
                 }
             }
-
-            // ★ 서브 기록은 인라인 목록이 아니라 하단 버튼(⏱+)으로 모달을 열어 확인하므로
-            //    여기서 별도 높이를 예약하지 않습니다.
-            h += localExpandH + 16; // 하단 버튼 여백 최소화
+            h += localExpandH + 26;
         }
         return h;
     }
-
-
 
     @Override
     protected void init() {
@@ -222,14 +285,7 @@ public class RankingScreen extends Screen {
         searchBtn = ButtonWidget.builder(Text.literal("🔍"), b -> { playUiClick(); if (this.client != null) this.client.setScreen(new RiderFindScreen(this)); }).dimensions(0, 0, iconBtnSize, 20).tooltip(net.minecraft.client.gui.tooltip.Tooltip.of(Text.literal("라이더 찾기"))).build();
         closeBtn = ButtonWidget.builder(Text.literal("⏴"), b -> {
             playUiClick();
-            if (ModConfig.get().showMainScreen){
-                if (this.client != null){
-                    this.client.setScreen(null);
-                }
-            }
-            else {
-                close();
-            }
+            if (ModConfig.get().showMainScreen){ if (this.client != null){ this.client.setScreen(null); } } else { close(); }
         }).dimensions(0, 0, iconBtnSize, 20).tooltip(net.minecraft.client.gui.tooltip.Tooltip.of(Text.literal("뒤로 가기"))).build();
         legacyRefreshBtn = ButtonWidget.builder(Text.literal("🔄"), b -> { playUiClick(); fetchRankingData(true); }).dimensions(0, 0, iconBtnSize, 20).tooltip(net.minecraft.client.gui.tooltip.Tooltip.of(Text.literal("새로 고침"))).build();
         globeBtn = ButtonWidget.builder(Text.literal("🌐"), b -> {
@@ -240,7 +296,6 @@ public class RankingScreen extends Screen {
         addDrawableChild(searchBtn); addDrawableChild(closeBtn); addDrawableChild(legacyRefreshBtn);
 
         trackSelectBtn = ButtonWidget.builder(Text.literal("트랙 선택 🔍"), b -> { playUiClick(); if (this.client != null) this.client.setScreen(new TrackSelectScreen(this, this.track, this::setTrackAndApplyFromCache)); }).dimensions(0, 0, BTN_W_TRACK, BTN_H).build();
-
         tireToggleBtn = ButtonWidget.builder(getTireToggleText(), b -> {
             playUiClick(); tirePanelOpen = !tirePanelOpen;
             if (tirePanelOpen) { enginePanelOpen = false; modePanelOpen = false; }
@@ -286,7 +341,6 @@ public class RankingScreen extends Screen {
         tableX = newUi ? rightAreaX : OUTER_PAD + 8;
         tableW = newUi ? rightAreaW : this.width - (OUTER_PAD + 8) * 2;
     }
-
 
     private void repositionUiElements() {
         computeLayout();
@@ -341,7 +395,6 @@ public class RankingScreen extends Screen {
         fetchRankingData(true);
     }
 
-    // ★ 리스트를 순회하며 "한 플레이어의 모든 기록"을 그룹화 (연속 여부와 무관하게 전체 순회)
     private void computeGroupedRanking() {
         groupedRanking.clear();
         if (ranking.isEmpty()) return;
@@ -350,23 +403,20 @@ public class RankingScreen extends Screen {
 
         for (int i = 0; i < ranking.size(); i++) {
             Entry e = ranking.get(i);
-            int realRank = i + 1; // 1-based index
+            int realRank = i + 1;
 
             GroupedEntry group = groupMap.get(e.player());
             if (group == null) {
-                // 처음 발견된 플레이어면 해당 랭크를 대표 순위로 저장
                 group = new GroupedEntry(realRank, realRank);
                 group.entries.add(e);
                 group.entryRanks.add(realRank);
                 groupMap.put(e.player(), group);
             } else {
-                // 이미 발견된 플레이어의 추가 하위 기록 저장
-                group.endRank = realRank; // 마지막 순위 업데이트 (UI 표시에 쓰일 수 있음)
+                group.endRank = realRank;
                 group.entries.add(e);
                 group.entryRanks.add(realRank);
             }
         }
-
         groupedRanking.addAll(groupMap.values());
     }
 
@@ -435,7 +485,6 @@ public class RankingScreen extends Screen {
                         if (toFetch > 0) {
                             for(int i=0; i<toFetch; i++) ranking.add(tempFiltered.get(currentOffset + i));
                             currentOffset += toFetch;
-                            // ★ 렌더링용 그룹 배열 재계산
                             computeGroupedRanking();
                         } else {
                             hasMoreData = false;
@@ -678,11 +727,9 @@ public class RankingScreen extends Screen {
                     if (!showBody) hiddenCount++;
                     if (!showEngine) hiddenCount++;
 
-                    // ★ getItemHeight() 한 곳에서만 계산 (중복 계산 제거)
                     extraH = getItemHeight(selectedDetailEntry, true, hiddenCount) - ROW_H;
                 }
 
-                // ★ 그룹화 배열 크기(groupedRanking.size()) 기준으로 스크롤 한계선 계산
                 int adjustedCapacityRows = Math.max(1, (tableH - 24 - extraH) / ROW_H) + 1;
                 int maxScroll = Math.max(0, groupedRanking.size() - adjustedCapacityRows + 1);
 
@@ -774,7 +821,6 @@ public class RankingScreen extends Screen {
                     }
                 }
 
-                // ★ 서브 내역 모달 버튼 클릭 이벤트 감지
                 if (selectedDetailEntry != null && subRecordsBtnScreenW > 0) {
                     if (isInside(mouseX, mouseY, subRecordsBtnScreenX, subRecordsBtnScreenY, subRecordsBtnScreenW, subRecordsBtnScreenH)) {
                         playUiClick();
@@ -798,11 +844,9 @@ public class RankingScreen extends Screen {
                     if (!showBody) hiddenCount++;
                     if (!showEngine) hiddenCount++;
 
-                    // ★ getItemHeight() 한 곳에서만 계산 (중복 계산 제거)
                     extraH = getItemHeight(selectedDetailEntry, true, hiddenCount) - ROW_H;
                 }
 
-                // ★ 클릭 감지를 위해 그룹화된 배열(groupedRanking) 기준으로 렌더링 범위 산출
                 int adjustedCapacityRows = Math.max(1, (tableH - 24 - extraH) / ROW_H) + 1;
                 int maxScroll = Math.max(0, groupedRanking.size() - adjustedCapacityRows + 1);
 
@@ -822,7 +866,6 @@ public class RankingScreen extends Screen {
                     if (!showBody) hiddenCount++;
                     if (!showEngine) hiddenCount++;
 
-                    // ★ 높이는 getItemHeight() 한 곳에서만 계산 (중복 계산으로 박스가 이중으로 커지던 버그 수정)
                     int itemH = getItemHeight(grp, grp == selectedDetailEntry, hiddenCount);
 
                     if (currentY > tableTop + tableH) break;
@@ -851,6 +894,7 @@ public class RankingScreen extends Screen {
 
     @Override
     public void render(DrawContext context, int mouseX, int mouseY, float delta) {
+
         renderBackground(context, mouseX, mouseY, delta);
 
         if (isNewUi() && sharedSidebar != null) sharedSidebar.render(context, mouseX, mouseY, delta);
@@ -914,11 +958,9 @@ public class RankingScreen extends Screen {
             if (!showTime) hiddenCount++;
             if (!showBody) hiddenCount++;
             if (!showEngine) hiddenCount++;
-            // ★ getItemHeight()에서 이미 계산된 확장분만 취함(ROW_H 제외) — 중복 계산 제거
             extraH = getItemHeight(selectedDetailEntry, true, hiddenCount) - ROW_H;
         }
 
-        // ★ groupedRanking 사이즈 기준으로 페이징 계산
         int adjustedCapacityRows = Math.max(1, (tableH - 24 - extraH) / ROW_H) + 1;
         int maxScroll = Math.max(0, groupedRanking.size() - adjustedCapacityRows + 1);
 
@@ -938,17 +980,15 @@ public class RankingScreen extends Screen {
         for (int i = start; i < end; i++) {
             GroupedEntry grp = groupedRanking.get(i);
             Entry topEntry = grp.entries.get(0);
+            boolean isSingle = "__singleplay__".equals(topEntry.serverAddress());
             boolean isMe = topEntry.player().equalsIgnoreCase(myName);
             boolean isExpanded = (grp == selectedDetailEntry);
-            boolean isSingle = "__singleplay__".equals(topEntry.serverAddress());
 
             int hiddenCount = 0;
             if (!showTime) hiddenCount++;
             if (!showBody) hiddenCount++;
             if (!showEngine) hiddenCount++;
 
-            // ★ 높이는 getItemHeight() 한 곳에서만 계산합니다.
-            //    (이전에는 여기서 동일한 확장 높이를 한 번 더 더해서 박스가 실제 필요한 높이의 거의 2배가 되던 버그가 있었습니다)
             int itemH = getItemHeight(grp, isExpanded, hiddenCount);
 
             if (currentY > tableTop + tableH) break;
@@ -963,11 +1003,13 @@ public class RankingScreen extends Screen {
             else if (grp.startRank == 3) bgColor = 0x44CD7F32;
             else if (((i - start) & 1) == 0) bgColor = 0x00000000;
 
-            context.fill(tableX + 1, currentY - 2, tableX + tableW - 1, currentY + itemH - 2, bgColor);
-
-            if (isExpanded) {
-                drawRectBorder(context, tableX + 1, currentY - 2, tableW - 2, itemH, 0xFF444444);
+            if (!isExpanded && grp.entries.size() > 1) {
+                context.fill(tableX + 1, currentY + ROW_H - 2, tableX + tableW - 1, currentY + ROW_H - 1, 0xFF444444);
+                context.fill(tableX + 1, currentY + ROW_H, tableX + tableW - 1, currentY + ROW_H + 1, 0xFF222222);
             }
+
+            context.fill(tableX + 1, currentY - 2, tableX + tableW - 1, currentY + itemH - 2, bgColor);
+            if (isExpanded) drawRectBorder(context, tableX + 1, currentY - 2, tableW - 2, itemH, 0xFF444444);
 
             if (!isExpanded && mouseX >= tableX && mouseX <= tableX + tableW && mouseY >= currentY - 2 && mouseY <= currentY + itemH - 2) {
                 context.fill(tableX + 1, currentY - 2, tableX + tableW - 1, currentY + itemH - 2, 0x33FFFFFF);
@@ -976,39 +1018,46 @@ public class RankingScreen extends Screen {
             context.getMatrices().push();
             context.getMatrices().scale(tableScale, tableScale, 1.0f);
 
-            int sY = (int)((currentY + (ROW_H - 10 * tableScale) / 2) / tableScale);
+            int cardCenterY = (int)(currentY / tableScale) + (int)(ROW_H / tableScale) / 2;
+            int sY = cardCenterY - 4;
             int sPlayerX = (int)(colPlayerX / tableScale);
 
-            // ★ 순위 렌더링 (대표 1순위만 표시하되, 서브 기록이 있으면 '+n' 표시 추가)
             String rankStr = grp.startRank + "위";
             context.drawTextWithShadow(this.textRenderer, rankStr, (int)(colRankX / tableScale), sY, rankColor);
 
             if (!isExpanded && grp.entries.size() > 1) {
                 int plusX = (int)(colRankX / tableScale) + this.textRenderer.getWidth(rankStr) + 2;
-                String plusStr = "+" + grp.entries.size();
-                context.drawTextWithShadow(this.textRenderer, plusStr, plusX, sY, 0xFFFFFF00);
+                context.drawTextWithShadow(this.textRenderer, "+", plusX, sY, 0xFFFFFF00);
             }
 
-            String repText = "";
-            if (topEntry.repTitle() != null && !topEntry.repTitle().isEmpty()) { repText = " [" + topEntry.repTitle() + "]"; }
+            int headSize = 16;
+            int headX = sPlayerX;
+            int headY = cardCenterY - 8;
 
+            Identifier headTex = SkinLoader.getSkin(topEntry.player(), headSize);
+            if (headTex != null) {
+                context.drawTexture(RenderLayer::getGuiTextured, headTex, headX, headY, 0.0F, 0.0F, headSize, headSize, headSize, headSize);
+            } else {
+                context.fill(headX, headY, headX + headSize, headY + headSize, 0xFF555555);
+            }
+
+            int textStartX = headX + headSize + 4;
+            String repText = "";
+            if (topEntry.repTitle() != null && !topEntry.repTitle().isEmpty()) { repText = "[" + topEntry.repTitle() + "]"; }
             int nextColX = showTime ? colTimeX : (showBody ? colBodyX : (showEngine ? colEngineX : tableX + tableW));
-            int maxPlayerW = Math.max(0, (int)((nextColX - colPlayerX - 5) / tableScale));
+            int maxPlayerW = Math.max(0, (int)((nextColX - colPlayerX - 25) / tableScale));
 
             if (repText.isEmpty()) {
-                context.drawTextWithShadow(this.textRenderer, trimWithEllipsis(topEntry.player(), maxPlayerW), sPlayerX, sY, 0xFFFFFF);
+                context.drawTextWithShadow(this.textRenderer, trimWithEllipsis(topEntry.player(), maxPlayerW), textStartX, sY, 0xFFFFFF);
             } else {
-                int maxNameW = Math.max(0, maxPlayerW - this.textRenderer.getWidth(repText));
-                if (maxNameW <= 0) {
-                    context.drawTextWithShadow(this.textRenderer, trimWithEllipsis(topEntry.player() + repText, maxPlayerW), sPlayerX, sY, 0xFFFFFF);
-                } else {
-                    String trimmedName = trimWithEllipsis(topEntry.player(), maxNameW);
-                    context.drawTextWithShadow(this.textRenderer, trimmedName, sPlayerX, sY, 0xFFFFFF);
-                    context.drawTextWithShadow(this.textRenderer, repText, sPlayerX + this.textRenderer.getWidth(trimmedName), sY, parseHex(topEntry.repColor(), 0x55FFFF));
-                }
+                context.drawTextWithShadow(this.textRenderer, trimWithEllipsis(topEntry.player(), maxPlayerW), textStartX, headY + 1, 0xFFFFFF);
+                context.getMatrices().push();
+                context.getMatrices().translate(headX + 14, headY + 10, 0);
+                context.getMatrices().scale(0.75f, 0.75f, 1.0f);
+                context.drawTextWithShadow(this.textRenderer, repText, 0, 0, parseHex(topEntry.repColor(), 0x55FFFF));
+                context.getMatrices().pop();
             }
 
-            boolean hiddenSomething = false;
             if (showTime) {
                 int nextTimeColX = showBody ? colBodyX : (showEngine ? colEngineX : tableX + tableW);
                 int maxTimeW = Math.max(0, (int)((nextTimeColX - colTimeX - 5) / tableScale));
@@ -1029,7 +1078,7 @@ public class RankingScreen extends Screen {
                     context.drawTextWithShadow(textRenderer, btnText, btnX, sY, btnColor);
                 }
 
-            } else hiddenSomething = true;
+            }
 
             if (showBody) {
                 int nextBodyColX = showEngine ? colEngineX : tableX + tableW;
@@ -1051,15 +1100,11 @@ public class RankingScreen extends Screen {
 
                     context.drawTextWithShadow(textRenderer, btnText, btnX, sY, btnColor);
                 }
-            } else hiddenSomething = true;
+            }
 
             if (showEngine) {
                 int maxEngW = Math.max(0, (int)((tableX + tableW - colEngineX - 5) / tableScale));
                 context.drawTextWithShadow(this.textRenderer, trimWithEllipsis(normalizeEngine(topEntry.engineName()), maxEngW), (int)(colEngineX / tableScale), sY, 0xFFFFFF);
-            } else hiddenSomething = true;
-
-            if (hiddenSomething) {
-                context.drawTextWithShadow(this.textRenderer, "+", (int)((tableX + tableW - 20) / tableScale), sY, 0xAAAAAA);
             }
 
             context.getMatrices().pop();
@@ -1069,7 +1114,7 @@ public class RankingScreen extends Screen {
                 context.getMatrices().scale(tableScale, tableScale, 1.0f);
 
                 int infoX = (int)((colPlayerX + 5) / tableScale);
-                int infoY = sY + 16;
+                int infoY = sY + 24;
                 int lineH = 16;
                 int maxW = (int)((tableW - 50) / tableScale);
 

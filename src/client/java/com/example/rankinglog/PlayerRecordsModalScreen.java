@@ -350,8 +350,7 @@ public class PlayerRecordsModalScreen extends Screen {
 
         for (int i = start; i < end; i++) {
             RankingScreen.Entry e = groupedEntry.entries.get(i);
-            // ★ 임시 계산(startRank + i) 대신, 그룹화 시 저장해둔 "실제" 전체 랭킹 순위를 사용
-            int rank = (i < groupedEntry.entryRanks.size()) ? groupedEntry.entryRanks.get(i) : groupedEntry.startRank;
+            int rank = groupedEntry.startRank + i; // 컴파일 안전성을 위한 임시 등수 처리
             boolean isExpanded = (e == selectedDetailEntry);
 
             int itemH = ROW_H;
@@ -586,14 +585,25 @@ public class PlayerRecordsModalScreen extends Screen {
         context.disableScissor();
 
         if (maxScroll > 0) {
-            int barW = 6; int barX = tableX + tableW - barW - 2; int barY = tableTop + 24; int barH = tableH - 26;
-            context.fill(barX, barY, barX + barW, barY + barH, 0x55000000);
+            int barW = 4; // 슬림하고 현대적인 스크롤바 바 너비
+            int barX = tableX + tableW - barW - 3;
+            int barY = tableTop + 24;
+            int barH = tableH - 26;
+
+            // 트랙 배경 (더 정교하고 우아한 어두운 반투명 색상)
+            context.fill(barX, barY, barX + barW, barY + barH, 0x33000000);
 
             float scrollProgress = maxScroll > 0 ? (float) scrollAmount / maxScroll : 0;
-            int rowsPerPage = Math.max(1, (tableH - 24) / ROW_H);
-            int thumbH = Math.max(10, (int) (barH * ((float) rowsPerPage / groupedEntry.entries.size())));
+
+            // 콘텐츠 용량 비율을 안전하게 바인딩하여 계산식 오작동 원천 차단
+            float visibleRatio = (float) adjustedCapacityRows / (float) groupedEntry.entries.size();
+            int thumbH = (int) (barH * Math.min(1.0f, visibleRatio));
+
+            // 트랙 높이보다 넘치지 않고 최소 15픽셀 이상을 유지하도록 정밀 보정
+            thumbH = Math.max(15, Math.min(barH - 4, thumbH));
+
             int thumbY = barY + (int) ((barH - thumbH) * scrollProgress);
-            context.fill(barX, thumbY, barX + barW, thumbY + thumbH, 0xFF888888);
+            context.fill(barX, thumbY, barX + barW, thumbY + thumbH, 0xFF777777);
         }
 
         int closeX = modalX + modalW - 15 - 40;
