@@ -182,7 +182,6 @@ public class InGameHudMixin {
 
 		if (isAllowedServer()) {
 			if ("로딩중...".equals(t)) {
-				BodyCaptureManager.onLoadingDetected("hud_title");
 				try { ModGatekeeper.onLoadingTitle(); } catch (Throwable ignored) {}
 			}
 
@@ -275,9 +274,16 @@ public class InGameHudMixin {
 					}
 				}
 
-				if (t.equals("3")) {
-					// ★ [도배 방지용 통합] 타이틀이 "3"으로 막 바뀌었을 때 단 한 번만 검사 및 디버그 출력
+				if (t.equals("1")) {
+					// ★ '로딩중' 타이틀이 뜨지 않는 싱글플레이/제작자 대결 대응: 카트바디 캡처를 '3' 타이틀 시점에 활성화.
+					//   (멀티 로비도 이 시점에 함께 활성화되며, onTitle3()의 그레이스 기간이 스캔 시간을 벌어줍니다)
+					BodyCaptureManager.onLoadingDetected("title_3");
+
+					// ★ [도배 방지용 통합] 타이틀이 "1"으로 막 바뀌었을 때 단 한 번만 검사 및 디버그 출력
 					BodyCaptureManager.onTitle3();
+				}
+
+				if (t.equals("3")) {
 
 					boolean isAdventure = currentGameMode == GameMode.ADVENTURE;
 
@@ -302,12 +308,19 @@ public class InGameHudMixin {
 						if (engineRaw != null) {
 							String engine = engineRaw.replace("[", "").replace("]", "").replace("엔진", "").trim();
 							cachedEngineName = engine.isBlank() ? "UNKNOWN" : engine;
-							logEngine("§a[Engine] 감지 성공: " + cachedEngineName);
+							logEngine("§a[Engine] 감지 성공(텍스트디스플레이): " + cachedEngineName);
 						} else {
-							logEngine("§c[Engine] 감지 실패(주변 텍스트디스플레이 없음/패턴 불일치)");
-							// ★ 엔진 감지 실패 시 등록 무장 강제 해제
-							multiPlayerSubmitArmed = false;
-							AutoSubmitter.multiPlayerSubmitArmed = false;
+							// ★ 싱글플레이/제작자 대결 등 텍스트디스플레이가 없는 환경 대비 어트리뷰트 백업 조회
+							String engineFromAttr = findEngineNameFromAttribute();
+							if (!"UNKNOWN".equals(engineFromAttr)) {
+								cachedEngineName = engineFromAttr;
+								logEngine("§a[Engine] 감지 성공(어트리뷰트 백업): " + cachedEngineName);
+							} else {
+								logEngine("§c[Engine] 감지 실패(텍스트디스플레이 없음/어트리뷰트도 UNKNOWN)");
+								// ★ 엔진 감지 실패 시 등록 무장 강제 해제
+								multiPlayerSubmitArmed = false;
+								AutoSubmitter.multiPlayerSubmitArmed = false;
+							}
 						}
 					}
 
@@ -659,6 +672,95 @@ public class InGameHudMixin {
 		return switch (value) {
 			case 0 -> "레이싱 타이어";
 			case 1 -> "스파이크 타이어";
+			default -> "UNKNOWN";
+		};
+	}
+
+	// ★ 싱글플레이/제작자 대결 등, 텍스트디스플레이가 없는 환경에서
+	//   data-engine-real 어트리뷰트 값으로 엔진명을 알아내기 위한 백업 함수 (findTireNameFromAttribute와 동일한 구조)
+	@Unique
+	private static String findEngineNameFromAttribute() {
+		MinecraftClient client = MinecraftClient.getInstance();
+		if (client.player == null || client.world == null) return "UNKNOWN";
+
+		net.minecraft.entity.LivingEntity closestTarget = null;
+
+		Entity rootVehicle = client.player.getRootVehicle();
+		if (rootVehicle != null && rootVehicle != client.player) {
+			for (Entity candidate : collectVehicleChain(rootVehicle)) {
+				if (candidate == client.player) continue;
+				if (!(candidate instanceof net.minecraft.entity.LivingEntity livingEntity)) continue;
+
+				String entityName = candidate.getName().getString().toLowerCase();
+
+				if (entityName.contains("안장") || entityName.contains("saddle") ||
+						entityName.contains("대구") || entityName.contains("cod")) {
+					closestTarget = livingEntity;
+					break;
+				}
+			}
+		}
+
+		if (closestTarget != null) {
+			var inst = closestTarget.getAttributeInstance(
+					net.minecraft.entity.attribute.EntityAttributes.ARMOR
+			);
+			if (inst != null) {
+				for (var mod : inst.getModifiers()) {
+					var id = mod.id();
+					if (id != null) {
+						String idStr = id.toString();
+						if (idStr.contains("data-engine-real")) {
+							int value = (int) mod.value();
+							return mapEngineValueToName(value);
+						}
+					}
+				}
+			}
+		}
+
+		var playerInst = client.player.getAttributeInstance(
+				net.minecraft.entity.attribute.EntityAttributes.EXPLOSION_KNOCKBACK_RESISTANCE
+		);
+		if (playerInst != null) {
+			for (var mod : playerInst.getModifiers()) {
+				var id = mod.id();
+				if (id != null && id.toString().contains("data-engine-real")) {
+					int value = (int) mod.value();
+					return mapEngineValueToName(value);
+				}
+			}
+		}
+
+		return "UNKNOWN";
+	}
+
+	// ★ main.mcfunction의 kart-engine 점수(data-engine-real 값)를 실제 표시 이름으로 정규화
+	//   KRP -> RUSH+ 로 개명, A2-D-KEYBOARD -> KEY 로 축약, 1004(주석 처리된 보트 엔진) -> BOAT
+	@Unique
+	private static String mapEngineValueToName(int value) {
+		return switch (value) {
+			case 0 -> "X";
+			case 1 -> "EX";
+			case 2 -> "JIU";
+			case 3 -> "NEW";
+			case 4 -> "Z7";
+			case 5 -> "V1";
+			case 6 -> "A2";
+			case 7 -> "1.0";
+			case 8 -> "PRO";
+			case 9 -> "RUSH+";
+			case 10 -> "CHARGE";
+			case 11 -> "SR";
+			case 1000 -> "N1";
+			case 1001 -> "RX";
+			case 1002 -> "KEY";
+			case 1003 -> "MK";
+			case 1004 -> "BOAT";
+			case 1005 -> "GEAR";
+			case 1006 -> "F1";
+			case 1007 -> "RALLY";
+			case 1008 -> "DS";
 			default -> "UNKNOWN";
 		};
 	}

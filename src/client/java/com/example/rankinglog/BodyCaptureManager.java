@@ -84,13 +84,13 @@ public final class BodyCaptureManager {
         if (!active) return;
 
         if (cachedKartBodyName != null && !cachedKartBodyName.equals("UNKNOWN")) {
-            finishCapture("title=3 (Found)");
+            finishCapture("title=1 (Found)");
         } else {
             if (!gracePeriod) {
                 gracePeriod = true;
                 graceStartMs = System.currentTimeMillis();
                 if (DebugLog.enabled()) {
-                    DebugLog.chat("§e[Body] '3' 감지! RootVehicle 탐색 시작... (최대 2초 연장)");
+                    DebugLog.chat("§e[Body] '1' 감지! RootVehicle 탐색 시작... (최대 2초 연장)");
                 }
             }
         }
