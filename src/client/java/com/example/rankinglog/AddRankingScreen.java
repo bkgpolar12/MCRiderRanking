@@ -169,6 +169,24 @@ public class AddRankingScreen extends Screen {
         // ★ Supabase에 보낼 랩타임 데이터
         json.addProperty("p_laps", lapsCsv);
 
+        return callEdgeFunction(json);
+    }
+
+    // ★ 본인 기록 삭제 요청. 엣지 펑션이 모장 토큰으로 실제 닉네임을 검증한 뒤
+    //   delete_racing_record_v1 RPC를 호출해 소유자가 맞는 기록만 삭제합니다.
+    public static JsonObject deleteRecord(String player, String recordId, String uuid, String token) {
+        JsonObject json = new JsonObject();
+        json.addProperty("action", "delete_record");
+        json.addProperty("p_player", player);
+        json.addProperty("p_record_id", recordId);
+        json.addProperty("p_uuid", uuid);
+        json.addProperty("p_token", token);
+
+        return callEdgeFunction(json);
+    }
+
+    // ★ submitRecord / deleteRecord가 공유하는 엣지 펑션 HTTP 호출 로직
+    private static JsonObject callEdgeFunction(JsonObject json) {
         try {
             java.net.URI uri = java.net.URI.create("https://wmlcwmfabuziancpxdoq.supabase.co/functions/v1/very_secret_code_v4");
             java.net.HttpURLConnection con = (java.net.HttpURLConnection) uri.toURL().openConnection();

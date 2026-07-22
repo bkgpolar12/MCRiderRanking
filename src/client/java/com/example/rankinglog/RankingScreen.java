@@ -101,6 +101,7 @@ public class RankingScreen extends Screen {
 
     private int profileBtnScreenX, profileBtnScreenY, profileBtnScreenW, profileBtnScreenH;
     private int subRecordsBtnScreenX, subRecordsBtnScreenY, subRecordsBtnScreenW, subRecordsBtnScreenH;
+    private int deleteBtnScreenX, deleteBtnScreenY, deleteBtnScreenW, deleteBtnScreenH;
 
     public static final String SUPABASE_URL = "https://wmlcwmfabuziancpxdoq.supabase.co/rest/v1/";
     public static final String SUPABASE_RPC_URL = SUPABASE_URL + "rpc/";
@@ -459,6 +460,7 @@ public class RankingScreen extends Screen {
                         for (int i = 0; i < rarr.size(); i++) {
                             JsonObject o = rarr.get(i).getAsJsonObject();
                             Entry e = new Entry(
+                                    safeString(o, "id", ""),
                                     safeString(o, "player", "Unknown"),
                                     safeString(o, "repTitle", ""),
                                     safeString(o, "repColor", "#55FFFF"),
@@ -831,6 +833,20 @@ public class RankingScreen extends Screen {
                     }
                 }
 
+                if (selectedDetailEntry != null && deleteBtnScreenW > 0) {
+                    if (isInside(mouseX, mouseY, deleteBtnScreenX, deleteBtnScreenY, deleteBtnScreenW, deleteBtnScreenH)) {
+                        playUiClick();
+                        if (this.client != null) {
+                            Entry topEntry = selectedDetailEntry.entries.get(0);
+                            this.client.setScreen(new DeleteRecordConfirmScreen(this, topEntry.player(), topEntry.id(), () -> {
+                                selectedDetailEntry = null;
+                                fetchRankingData(true);
+                            }));
+                        }
+                        return true;
+                    }
+                }
+
                 int startY = tableTop + 24;
 
                 int extraH = 0;
@@ -976,6 +992,7 @@ public class RankingScreen extends Screen {
         specBtnScreenW = 0;
         lapsBtnScreenW = 0;
         subRecordsBtnScreenW = 0;
+        deleteBtnScreenW = 0;
 
         for (int i = start; i < end; i++) {
             GroupedEntry grp = groupedRanking.get(i);
@@ -1245,6 +1262,23 @@ public class RankingScreen extends Screen {
                     context.drawCenteredTextWithShadow(textRenderer, "⏱+", subBtnX + subBtnW / 2, btnY + 6, 0xFFFFFF);
                     if (hoverSubBtn) renderTooltip(context, net.minecraft.text.Text.literal("기록 모두 보기"), mouseX, mouseY);
                 }
+
+                // ★ 본인이 등록한 기록일 때만 오른쪽 맨 끝에 삭제(휴지통) 버튼 표시
+                if (isMe && topEntry.id() != null && !topEntry.id().isEmpty()) {
+                    int trashBtnW = 26;
+                    int trashBtnX = tableX + tableW - trashBtnW - 10;
+
+                    deleteBtnScreenX = trashBtnX;
+                    deleteBtnScreenY = btnY;
+                    deleteBtnScreenW = trashBtnW;
+                    deleteBtnScreenH = btnH;
+
+                    boolean hoverTrash = isInside(mouseX, mouseY, trashBtnX, btnY, trashBtnW, btnH);
+                    context.fill(trashBtnX, btnY, trashBtnX + trashBtnW, btnY + btnH, hoverTrash ? 0xFF773333 : 0xFF441111);
+                    drawRectBorder(context, trashBtnX, btnY, trashBtnW, btnH, hoverTrash ? 0xFFFF8888 : 0xFFAA4444);
+                    context.drawCenteredTextWithShadow(textRenderer, "🗑", trashBtnX + trashBtnW / 2, btnY + 6, 0xFFFFFF);
+                    if (hoverTrash) renderTooltip(context, net.minecraft.text.Text.literal("기록 삭제"), mouseX, mouseY);
+                }
             }
 
             currentY += itemH;
@@ -1276,7 +1310,7 @@ public class RankingScreen extends Screen {
 
     @Override public boolean shouldPause() { return false; }
 
-    public record Entry(String player, String repTitle, String repColor, String timeStr, long timeMillis, String engineName, String bodyName, String tireName, String modes, long submittedAtMs, String serverAddress, String kartSpecDebug, String lapData) {}
+    public record Entry(String id, String player, String repTitle, String repColor, String timeStr, long timeMillis, String engineName, String bodyName, String tireName, String modes, long submittedAtMs, String serverAddress, String kartSpecDebug, String lapData) {}
 
     // ★ 렌더링용 그룹 클래스 추가
     public static class GroupedEntry {
@@ -1357,6 +1391,7 @@ public class RankingScreen extends Screen {
                                     for (int j = 0; j < rarr.size(); j++) {
                                         JsonObject o = rarr.get(j).getAsJsonObject();
                                         list.add(new Entry(
+                                                safeString(o, "id", ""),
                                                 safeString(o, "player", "Unknown"),
                                                 safeString(o, "repTitle", ""),
                                                 safeString(o, "repColor", "#55FFFF"),
